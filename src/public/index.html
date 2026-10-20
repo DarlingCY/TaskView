@@ -1546,7 +1546,7 @@
   function cardHtml(task, index) {
     const meta = STATUS_META[task.status] || STATUS_META.todo;
     const tone = PRIORITY_META[task.priority] ? PRIORITY_META[task.priority].tone : 'low';
-    const showProject = state.projectPath === null;
+    const projectName = String(task.project_name || '').trim();
     const tags = tagsOf(task);
     const next = nextStatusOf(task.status);
     const nextMeta = STATUS_META[next];
@@ -1554,17 +1554,23 @@
     return '' +
       '<article class="task-card group p-3 pl-3.5 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
         'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title) + '">' +
-        '<div class="mb-2 flex items-center gap-1.5">' +
-          priorityPill(task) +
-          (showProject && task.project_name
-            ? '<span class="chip max-w-[120px] truncate" title="' + attr(task.project_name) + '"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-brand/70"></span>' + esc(task.project_name) + '</span>'
-            : '') +
-          '<span class="ml-auto flex items-center gap-0.5 card-actions">' +
+        '<div class="mb-1.5 flex items-center gap-1.5">' +
+          '<div class="flex min-w-0 flex-1 items-center">' +
+            (projectName
+              ? '<span class="chip min-w-0 max-w-full" title="' + attr(projectName) + '"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-brand/70"></span><span class="min-w-0 truncate">' + esc(projectName) + '</span></span>'
+              : '<span class="chip min-w-0 max-w-full text-ink3" title="未归属项目"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-ink3/40"></span><span class="min-w-0 truncate">未归属项目</span></span>') +
+          '</div>' +
+          '<span class="ml-auto flex shrink-0 items-center gap-0.5 card-actions">' +
             '<button data-act="advance" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
               'class="icon-btn h-6 w-6" style="color:rgb(var(--c-' + nextMeta.tone + '))">' + icon(next === 'done' ? 'check' : 'arrowRight', 'h-3.5 w-3.5') + '</button>' +
             '<button data-act="edit" title="编辑任务" class="icon-btn h-6 w-6">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
             '<button data-act="delete" title="删除任务" class="icon-btn icon-btn-danger h-6 w-6">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
           '</span>' +
+        '</div>' +
+
+        '<div class="mb-2 flex items-center gap-2">' +
+          '<span class="min-w-0 flex-1 truncate font-mono text-[10px] tabular-nums tracking-[.02em] text-ink3" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
+          '<span class="shrink-0">' + priorityPill(task) + '</span>' +
         '</div>' +
 
         '<h3 class="text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '">' + esc(task.title) + '</h3>' +
