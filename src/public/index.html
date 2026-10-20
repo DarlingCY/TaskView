@@ -281,17 +281,19 @@
     transition: transform .18s cubic-bezier(.16,1,.3,1), box-shadow .22s ease, border-color .22s ease, background-color .22s ease;
     will-change: transform;
   }
-  .task-card::before {
-    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
-    background: var(--accent, rgb(var(--c-ink-3)));
-    opacity: .85; transition: opacity .2s ease, width .2s ease;
-  }
   .task-card:hover {
     transform: translateY(-2px);
     border-color: color-mix(in oklab, var(--accent, rgb(var(--c-brand))) 55%, rgb(var(--c-line)));
     box-shadow: 0 14px 34px -18px rgb(0 0 0 / .6), 0 0 0 1px color-mix(in oklab, var(--accent, rgb(var(--c-brand))) 22%, transparent);
   }
-  .task-card:hover::before { opacity: 1; width: 3px; }
+  /* priority swatch — non-interactive color plate; the only priority cue on the board */
+  .prio-swatch {
+    display: inline-block; flex: none; height: 8px; width: 18px; border-radius: 99px;
+    background: rgb(var(--accent, var(--c-medium)));
+    box-shadow: 0 0 0 1px rgb(255 255 255 / .14) inset;
+  }
+  .prio-swatch--urgent { width: 26px; }
+  .dark .prio-swatch { box-shadow: 0 0 0 1px rgb(0 0 0 / .22) inset; }
   .task-card.is-dragging { opacity: .35; transform: rotate(1.2deg) scale(.985); }
   .task-card.is-flash { animation: flashCard .9s ease; }
   @keyframes flashCard {
@@ -300,6 +302,9 @@
   }
   .card-actions { opacity: 0; transform: translateX(4px); transition: opacity .16s ease, transform .16s ease; }
   .task-card:hover .card-actions, .task-card:focus-within .card-actions { opacity: 1; transform: none; }
+  /* when actions appear they sit on top of the project name, so fade it out */
+  .task-card:hover .card-project, .task-card:focus-within .card-project { opacity: 0; }
+  .card-project { transition: opacity .16s ease; }
   .icon-btn {
     display: inline-flex; align-items: center; justify-content: center;
     height: 1.75rem; width: 1.75rem; border-radius: .5rem; color: rgb(var(--c-ink-3));
@@ -307,7 +312,18 @@
   }
   .icon-btn:hover { background: rgb(var(--c-surface-3)); color: rgb(var(--c-ink)); }
   .icon-btn:active { transform: scale(.9); }
+  .icon-btn-danger { color: rgb(var(--c-urgent)); }
   .icon-btn-danger:hover { background: rgb(var(--c-urgent) / .14); color: rgb(var(--c-urgent)); }
+
+  /* --------------------------------------------------------------- pager */
+  .pager-btn {
+    display: inline-flex; align-items: center; gap: .3rem; border-radius: .5rem;
+    border: 1px solid rgb(var(--c-line)); background: rgb(var(--c-surface-2) / .8);
+    padding: .25rem .55rem; font-size: .75rem; font-weight: 500; color: rgb(var(--c-ink-2));
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .pager-btn:hover:not(:disabled) { color: rgb(var(--c-ink)); border-color: rgb(var(--c-ink-3) / .5); background: rgb(var(--c-surface-3)); }
+  .pager-btn:disabled { opacity: .38; cursor: not-allowed; }
 
   /* --------------------------------------------------------- dnd + columns */
   .col-body { transition: background-color .18s ease, box-shadow .18s ease; }
@@ -529,10 +545,10 @@
 
       <!-- sort -->
       <div class="hidden w-[112px] shrink-0 lg:block">
-        <select id="sort" class="hidden" tabindex="-1" aria-hidden="true" aria-label="排序">
+        <select id="sort" class="hidden" tabindex="-1" aria-hidden="true" aria-label="列表排序">
           <option value="updated">最近更新</option>
           <option value="created">最新创建</option>
-          <option value="priority">优先级</option>
+          <option value="priority">优先级 · 紧急优先</option>
           <option value="title">标题 A–Z</option>
         </select>
       </div>
@@ -585,6 +601,7 @@
     check: '<path d="M20 6.5 9.5 17 4 11.5"/>',
     chevronDown: '<path d="m6 9.5 6 6 6-6"/>',
     chevronRight: '<path d="m9.5 18 6-6-6-6"/>',
+    chevronLeft: '<path d="m14.5 18-6-6 6-6"/>',
     inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 6.8V12l3.4 2"/>',
     zap: '<path d="M13 2.5 4.3 13.1A1 1 0 0 0 5.05 14.6H11l-1 6.9 9-10.6a1 1 0 0 0-.8-1.5H12z"/>',
@@ -636,7 +653,7 @@
     low:    { label: '低',   icon: 'arrowDown',  tone: 'low' },
   };
   const SORT_WEIGHT = { urgent: 0, high: 1, medium: 2, low: 3 };
-  const SORT_LABEL = { updated: '最近更新', created: '最新创建', priority: '优先级', title: '标题 A–Z' };
+  const SORT_LABEL = { updated: '最近更新', created: '最新创建', priority: '优先级 · 紧急优先', title: '标题 A–Z' };
 
   /* =================================================================== state */
   const state = {
@@ -646,6 +663,8 @@
     priorities: new Set(),
     tags: new Set(),
     sort: 'updated',
+    listPage: 0,          // 0-based page for the paginated list view
+    listPageKey: '',      // filter/view/sort signature the current page belongs to
     tasks: [],
     projects: [],
     stats: { total: 0, backlog: 0, todo: 0, in_progress: 0, done: 0 },
@@ -710,11 +729,13 @@
     return new Date(then).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
   }
 
-  function formatDate(ts) {
+  function formatDateTime(ts) {
     if (!ts) return '—';
     const d = new Date(Number(ts));
     if (isNaN(d.getTime())) return '—';
-    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' });
+    const pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
   function debounce(fn, wait) {
@@ -1229,16 +1250,19 @@
     const previous = task.priority;
     task.priority = next;
     task.updated_at = Date.now();
+    // Keep the board priority-ordered while the PATCH is in flight
+    if (state.view === 'board') { renderAll(); refreshTopbarCount(); }
     try {
       const updated = unwrapTask(await api('/api/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: { priority: next } }));
       if (updated) replaceTask(updated);
       renderAll();
+      refreshStats();
       toast('优先级已设为 ' + PRIORITY_META[next].label, {
         tone: 'success',
         actionLabel: '撤销',
         onAction: function () {
           task.priority = previous;
-          patchTask(id, { priority: previous }).then(renderAll, function () {});
+          patchTask(id, { priority: previous }).then(function () { renderAll(); refreshStats(); }, function () {});
         },
       });
     } catch (err) {
@@ -1246,6 +1270,11 @@
       renderAll();
       toast(err.message || '无法更新优先级', { tone: 'error' });
     }
+  }
+
+  function refreshTopbarCount() {
+    const count = state.tasks.filter(matchesFilters).length;
+    $('#crumb-count').textContent = count === state.tasks.length ? String(state.tasks.length) : count + '/' + state.tasks.length;
   }
 
   /* ==================================================================== data */
@@ -1498,13 +1527,12 @@
   }
 
   /* -------------------------------------------------------------------- board */
-  function priorityPill(task) {
+  // Compact priority marker used by the list view (board cards use the swatch).
+  function priorityDot(task) {
     const meta = PRIORITY_META[task.priority] || PRIORITY_META.medium;
     const tone = meta.tone;
-    return '<button data-act="cycle-priority" title="点击切换优先级（当前：' + meta.label + '）" ' +
-      'class="pill border-transparent hover:brightness-110 active:scale-95" ' +
-      'style="background:rgb(var(--c-' + tone + ') / .14); color:rgb(var(--c-' + tone + '))">' +
-      icon(meta.icon, 'h-3 w-3') + meta.label + '</button>';
+    return '<span class="inline-flex items-center gap-1.5 whitespace-nowrap text-[11.5px] font-500" style="color:rgb(var(--c-' + tone + '))">' +
+      '<span class="h-2 w-2 shrink-0 rounded-full" style="background:rgb(var(--c-' + tone + '))"></span>' + meta.label + '</span>';
   }
 
   function codeAnchor(task) {
@@ -1543,37 +1571,43 @@
     return STATUS_ORDER[index + 1] || 'done';
   }
 
+  // Board cards are always ordered by priority (urgent → low). This is independent
+  // of the sort dropdown, which only drives the list view.
+  function byBoardPriority(a, b) {
+    const wa = SORT_WEIGHT[a.priority];
+    const wb = SORT_WEIGHT[b.priority];
+    return (wa === undefined ? 9 : wa) - (wb === undefined ? 9 : wb) || (b.updated_at || 0) - (a.updated_at || 0);
+  }
+
   function cardHtml(task, index) {
     const meta = STATUS_META[task.status] || STATUS_META.todo;
-    const tone = PRIORITY_META[task.priority] ? PRIORITY_META[task.priority].tone : 'low';
+    const priorityMeta = PRIORITY_META[task.priority] || PRIORITY_META.medium;
+    const tone = priorityMeta.tone;
     const projectName = String(task.project_name || '').trim();
     const tags = tagsOf(task);
     const next = nextStatusOf(task.status);
     const nextMeta = STATUS_META[next];
 
     return '' +
-      '<article class="task-card group p-3 pl-3.5 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
-        'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title) + '">' +
-        '<div class="mb-1.5 flex items-center gap-1.5">' +
-          '<div class="flex min-w-0 flex-1 items-center">' +
-            (projectName
-              ? '<span class="chip min-w-0 max-w-full" title="' + attr(projectName) + '"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-brand/70"></span><span class="min-w-0 truncate">' + esc(projectName) + '</span></span>'
-              : '<span class="chip min-w-0 max-w-full text-ink3" title="未归属项目"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-ink3/40"></span><span class="min-w-0 truncate">未归属项目</span></span>') +
-          '</div>' +
-          '<span class="ml-auto flex shrink-0 items-center gap-0.5 card-actions">' +
-            '<button data-act="advance" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
+      '<article class="task-card group p-3 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
+        'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title + ' · ' + meta.label + ' · ' + priorityMeta.label + '优先级') + '">' +
+        '<div class="mb-1 flex items-center gap-1.5">' +
+          '<span class="shrink-0 font-mono text-[10px] tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
+          '<span class="card-project ml-auto min-w-0 truncate text-right text-[10.5px] text-ink3" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
+          '<span class="flex shrink-0 items-center gap-0.5 card-actions">' +
+            '<button data-act="advance" tabindex="-1" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
               'class="icon-btn h-6 w-6" style="color:rgb(var(--c-' + nextMeta.tone + '))">' + icon(next === 'done' ? 'check' : 'arrowRight', 'h-3.5 w-3.5') + '</button>' +
-            '<button data-act="edit" title="编辑任务" class="icon-btn h-6 w-6">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
-            '<button data-act="delete" title="删除任务" class="icon-btn icon-btn-danger h-6 w-6">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
+            '<button data-act="edit" tabindex="-1" title="编辑任务" class="icon-btn h-6 w-6">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
+            '<button data-act="delete" tabindex="-1" title="删除任务" class="icon-btn icon-btn-danger h-6 w-6">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
           '</span>' +
         '</div>' +
 
-        '<div class="mb-2 flex items-center gap-2">' +
-          '<span class="min-w-0 flex-1 truncate font-mono text-[10px] tabular-nums tracking-[.02em] text-ink3" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
-          '<span class="shrink-0">' + priorityPill(task) + '</span>' +
+        '<div class="mb-1.5 flex items-center gap-2">' +
+          '<h3 class="min-w-0 flex-1 text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '">' + esc(task.title) + '</h3>' +
+          '<span class="prio-swatch' + (task.priority === 'urgent' ? ' prio-swatch--urgent' : '') + '" ' +
+            'style="background:rgb(var(--c-' + tone + ')); width:' + (task.priority === 'urgent' ? '26px' : task.priority === 'high' ? '20px' : '14px') + '" ' +
+            'aria-label="' + attr(priorityMeta.label + '优先级') + '" title="' + attr(priorityMeta.label + '优先级') + '"></span>' +
         '</div>' +
-
-        '<h3 class="text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '">' + esc(task.title) + '</h3>' +
 
         (task.description
           ? '<p class="mt-1.5 text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
@@ -1583,17 +1617,18 @@
         (task.agent_notes ? '<div class="mt-2">' + agentNotesBlock(task) + '</div>' : '') +
 
         '<div class="mt-2.5 flex items-center gap-1.5">' +
-          tags.slice(0, 3).map(function (tag) {
-            return '<span class="chip">#' + esc(tag) + '</span>';
-          }).join('') +
-          (tags.length > 3 ? '<span class="chip">+' + (tags.length - 3) + '</span>' : '') +
+          (tags.length
+            ? tags.slice(0, 3).map(function (tag) {
+                return '<span class="chip">#' + esc(tag) + '</span>';
+              }).join('') + (tags.length > 3 ? '<span class="chip">+' + (tags.length - 3) + '</span>' : '')
+            : '') +
           '<span class="ml-auto shrink-0 text-[10px] tabular-nums text-ink3">' + relativeTime(task.updated_at) + '</span>' +
         '</div>' +
       '</article>';
   }
 
   function renderBoard() {
-    const tasks = visibleTasks();
+    const tasks = state.tasks.filter(matchesFilters).sort(byBoardPriority);
     const grouped = { backlog: [], todo: [], in_progress: [], done: [] };
     tasks.forEach(function (task) { (grouped[task.status] || grouped.todo).push(task); });
 
@@ -1623,9 +1658,27 @@
   }
 
   /* --------------------------------------------------------------------- list */
+  const LIST_PAGE_SIZE = 20;
+
+  function listPageCount(total) { return Math.max(1, Math.ceil(total / LIST_PAGE_SIZE)); }
+
   function renderList() {
     const tasks = visibleTasks();
+
+    // Pagination: the page key captures everything that defines the current
+    // result set, so a filter/search/sort change starts again from page 1 while
+    // plain re-renders (refresh, edit, delete) just clamp to the available pages.
+    const pageKey = state.projectPath + '|' + state.sort + '|' + state.search.trim().toLowerCase() + '|' +
+      Array.from(state.priorities).sort().join(',') + '|' + Array.from(state.tags).sort().join(',');
+    if (pageKey !== state.listPageKey) { state.listPageKey = pageKey; state.listPage = 0; }
+
+    const totalPages = listPageCount(tasks.length);
+    state.listPage = Math.min(Math.max(state.listPage, 0), totalPages - 1);
+    const pageStart = state.listPage * LIST_PAGE_SIZE;
+    const pageTasks = tasks.slice(pageStart, pageStart + LIST_PAGE_SIZE);
+
     if (!tasks.length) {
+      state.listPage = 0;
       listEl.innerHTML =
         '<div class="grid h-full place-items-center">' +
           '<div class="max-w-sm text-center">' +
@@ -1644,9 +1697,8 @@
     }
 
     let rows = '';
-    tasks.forEach(function (task, index) {
+    pageTasks.forEach(function (task, index) {
       const status = STATUS_META[task.status] || STATUS_META.todo;
-      const priority = PRIORITY_META[task.priority] || PRIORITY_META.medium;
       const tags = tagsOf(task);
       rows +=
         '<tr class="cursor-pointer border-b border-line-2/70 animate-fadeUp" data-task-id="' + attr(task.id) + '" tabindex="0" style="animation-delay:' + Math.min(index, 14) * 25 + 'ms">' +
@@ -1654,7 +1706,7 @@
             '<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-[3px] text-[11px] font-500" style="background:rgb(var(--c-' + status.tone + ') / .12); color:rgb(var(--c-' + status.tone + '))">' +
               icon(status.icon, 'h-3 w-3') + status.label + '</span>' +
           '</td>' +
-          '<td class="px-2 py-2.5">' + priorityPill(task) + '</td>' +
+          '<td class="px-2 py-2.5">' + priorityDot(task) + '</td>' +
           '<td class="max-w-[420px] px-2 py-2.5">' +
             '<div class="flex items-center gap-2">' +
               '<span class="truncate text-[13px] font-500 text-ink">' + esc(task.title) + '</span>' +
@@ -1670,17 +1722,20 @@
           '<td class="max-w-[160px] px-2 py-2.5">' +
             '<span class="flex items-center gap-1.5 truncate text-[12px] text-ink2"><span class="h-1.5 w-1.5 shrink-0 rounded-full bg-brand/60"></span>' + esc(task.project_name || '—') + '</span>' +
           '</td>' +
-          '<td class="whitespace-nowrap px-2 py-2.5 text-[11.5px] tabular-nums text-ink3">' + formatDate(task.created_at) + '</td>' +
-          '<td class="py-2.5 pl-2 pr-3 text-right">' +
+          '<td class="whitespace-nowrap px-2 py-2.5 font-mono text-[11px] tabular-nums text-ink3" title="创建时间">' + formatDateTime(task.created_at) + '</td>' +
+          '<td class="py-2.5 pl-2 pr-3">' +
             '<span class="flex items-center justify-end gap-0.5">' +
               '<button data-act="code" class="icon-btn h-6 w-6" title="查看代码">' + icon('fileCode', 'h-3.5 w-3.5') + '</button>' +
               '<button data-act="edit" class="icon-btn h-6 w-6" title="编辑">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
               '<button data-act="delete" class="icon-btn icon-btn-danger h-6 w-6" title="删除">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
             '</span>' +
-            '<span class="text-[11px] tabular-nums text-ink3">' + relativeTime(task.updated_at) + '</span>' +
           '</td>' +
         '</tr>';
     });
+
+    const rangeLabel = tasks.length
+      ? '第 ' + (pageStart + 1) + '–' + Math.min(pageStart + LIST_PAGE_SIZE, tasks.length) + ' 项'
+      : '';
 
     listEl.innerHTML =
       '<div class="mx-auto max-w-[1500px] overflow-hidden rounded-xl border border-line bg-surface/50 backdrop-blur-sm">' +
@@ -1702,6 +1757,14 @@
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
           '</table>' +
+        '</div>' +
+        '<div class="flex flex-wrap items-center gap-2 border-t border-line-2 px-3.5 py-2.5">' +
+          '<span class="text-[11px] tabular-nums text-ink3">共 ' + tasks.length + ' 项' + (rangeLabel ? ' · ' + rangeLabel : '') + '</span>' +
+          '<div class="ml-auto flex items-center gap-1.5">' +
+            '<button class="pager-btn" data-act="list-page" data-page="prev"' + (state.listPage <= 0 ? ' disabled' : '') + '>' + icon('chevronLeft', 'h-3.5 w-3.5') + '上一页</button>' +
+            '<span class="px-1 text-[11.5px] tabular-nums text-ink2">第 <b class="font-600 text-ink">' + (state.listPage + 1) + '</b> / ' + totalPages + ' 页</span>' +
+            '<button class="pager-btn" data-act="list-page" data-page="next"' + (state.listPage >= totalPages - 1 ? ' disabled' : '') + '>下一页' + icon('chevronRight', 'h-3.5 w-3.5') + '</button>' +
+          '</div>' +
         '</div>' +
       '</div>';
   }
@@ -1793,11 +1856,12 @@
     dragId = null;
 
     const list = column.querySelector('[data-cardlist]');
-    const emptyState = list.querySelector('.border-dashed');
+    const landed = state.tasks.find(function (t) { return t.id === id; });
+    if (card && landed) { landed.status = status; landed.updated_at = Date.now(); }
+    // Re-render in priority order after the optimistic flash so the board never
+    // keeps a card at its drop position; moveTask re-renders on success/failure too.
     if (card) {
-      if (emptyState) list.insertBefore(card, emptyState); else list.appendChild(card);
-      card.classList.add('is-flash');
-      setTimeout(function () { card.classList.remove('is-flash'); }, 900);
+      setTimeout(function () { if (landed && landed.status === status) renderBoard(); }, 220);
     }
     updateColumnCounts();
     moveTask(id, status);
@@ -1854,6 +1918,18 @@
       setView('board');
       const column = boardEl.querySelector('.col-wrap[data-status="' + status + '"]');
       if (column) column.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      return;
+    }
+    if (action === 'list-page') {
+      const step = node.getAttribute('data-page') === 'prev' ? -1 : 1;
+      const totalPages = listPageCount(state.tasks.filter(matchesFilters).length);
+      const nextPage = Math.min(Math.max(state.listPage + step, 0), totalPages - 1);
+      if (nextPage !== state.listPage) {
+        state.listPage = nextPage;
+        renderList();
+        listEl.scrollTop = 0;
+        mainScroll.scrollTo({ top: 0, behavior: 'smooth' });
+      }
       return;
     }
 
