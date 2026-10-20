@@ -2019,7 +2019,7 @@
       size: 'max-w-3xl',
       titleId: 'task-modal-title',
       html:
-        '<form novalidate>' +
+        '<form novalidate class="flex min-h-0 min-w-0 flex-1 flex-col">' +
           '<header class="flex shrink-0 items-center gap-2.5 border-b border-line-2 px-5 py-3.5">' +
             '<span class="grid h-7 w-7 shrink-0 place-items-center rounded-lg" style="background:rgb(var(--c-brand) / .14); color:rgb(var(--c-brand))">' + icon(isEdit ? 'pencil' : 'plusCircle', 'h-4 w-4') + '</span>' +
             '<h2 id="task-modal-title" class="font-display text-[15px] font-600 tracking-tight text-ink">' + (isEdit ? '编辑任务' : '新建任务') + '</h2>' +
