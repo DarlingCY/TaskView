@@ -1,0 +1,27 @@
+# Build output & binaries
+/dist/
+*.exe
+!/skills/taskview/scripts/taskview.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/taskview
+
+# Local TaskView database and runtime state
+/.taskview/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+!/testdata/legacy_node.db
+
+# Temporary & log artifacts (optional)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
