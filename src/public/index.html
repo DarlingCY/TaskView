@@ -194,12 +194,83 @@
     display: block; font-size: .6875rem; font-weight: 500; letter-spacing: .06em;
     text-transform: uppercase; color: rgb(var(--c-ink-3)); margin-bottom: .375rem;
   }
-  select.field {
-    appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 2rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right .55rem center; background-size: 1rem;
+  /* -------------------------------------------------------- custom select */
+  .tselect { position: relative; display: block; min-width: 0; }
+  .tselect-trigger {
+    display: inline-flex; align-items: center; gap: .5rem; width: 100%;
+    text-align: left; cursor: pointer; padding: .55rem 2rem .55rem .7rem;
   }
-  select.field option { background: rgb(var(--c-surface-2)); color: rgb(var(--c-ink)); }
+  .tselect-trigger:hover { background: rgb(var(--c-surface-3) / .9); }
+  .tselect-trigger[aria-expanded="true"] {
+    background: rgb(var(--c-surface)); border-color: rgb(var(--c-brand) / .8);
+    box-shadow: 0 0 0 3px rgb(var(--c-brand) / .18);
+  }
+  .tselect-trigger:disabled { cursor: not-allowed; opacity: .55; }
+  .tselect-trigger:disabled:hover { background: rgb(var(--c-surface-3) / .7); border-color: rgb(var(--c-line)); }
+  .tselect-trigger--compact {
+    padding: .4375rem 1.55rem .4375rem .6rem; font-size: .75rem;
+  }
+  .tselect-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tselect-value.is-placeholder { color: rgb(var(--c-ink-3)); }
+  .tselect-arrow {
+    pointer-events: none; position: absolute; right: .7rem; top: 50%; display: inline-flex;
+    color: rgb(var(--c-ink-3)); transform: translateY(-50%);
+    transition: transform .18s ease, color .18s ease;
+  }
+  .tselect-trigger:hover .tselect-arrow { color: rgb(var(--c-ink-2)); }
+  .tselect-trigger--compact .tselect-arrow { right: .5rem; }
+  .tselect-trigger--compact .tselect-arrow svg { width: .75rem; height: .75rem; }
+  .tselect-trigger[aria-expanded="true"] .tselect-arrow {
+    color: rgb(var(--c-brand)); transform: translateY(-50%) rotate(180deg);
+  }
+  .tselect-menu {
+    position: fixed; z-index: 80; padding: .3rem; border-radius: .75rem;
+    border: 1px solid rgb(var(--c-line)); background: rgb(var(--c-surface-2));
+    box-shadow: 0 18px 42px -18px rgb(0 0 0 / .45), 0 4px 12px -6px rgb(0 0 0 / .28);
+    overflow-y: auto; overscroll-behavior: contain; outline: none;
+    scroll-padding-block: .3rem; transform-origin: top center;
+    --select-from: -4px;
+    animation: selectIn .16s cubic-bezier(.16,1,.3,1) both;
+  }
+  .dark .tselect-menu {
+    box-shadow: 0 26px 60px -22px rgb(0 0 0 / .92), 0 0 0 1px rgb(var(--c-line) / .8);
+  }
+  .tselect-menu.is-above { transform-origin: bottom center; --select-from: 4px; }
+  @keyframes selectIn { from { opacity: 0; transform: translateY(var(--select-from)) scale(.985); } to { opacity: 1; transform: none; } }
+  .tselect-opt {
+    display: flex; align-items: center; gap: .5rem; width: 100%; min-height: 2rem;
+    border-radius: .5rem; padding: .375rem .45rem .375rem .6rem;
+    font-size: .8125rem; line-height: 1.25rem; color: rgb(var(--c-ink-2));
+    text-align: left; cursor: pointer; user-select: none;
+    transition: background-color .12s ease, color .12s ease, box-shadow .12s ease;
+  }
+  .tselect-opt-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tselect-check {
+    flex: none; width: 14px; height: 14px; opacity: 0; color: rgb(var(--c-brand));
+    transform: scale(.8); transition: opacity .12s ease, transform .12s ease;
+  }
+  .tselect-opt:hover { color: rgb(var(--c-ink)); background: rgb(var(--c-surface-3)); }
+  .tselect-opt[aria-selected="true"] {
+    color: rgb(var(--c-ink)); background: rgb(var(--c-brand) / .14); font-weight: 500;
+    box-shadow: inset 0 0 0 1px rgb(var(--c-brand) / .2);
+  }
+  .tselect-opt[aria-selected="true"] .tselect-check { opacity: 1; transform: none; }
+  .tselect-opt.is-active {
+    color: rgb(var(--c-ink)); background: rgb(var(--c-surface-3));
+    box-shadow: inset 0 0 0 1px rgb(var(--c-line) / .9);
+  }
+  .tselect-opt[aria-selected="true"]:hover,
+  .tselect-opt[aria-selected="true"].is-active {
+    background: rgb(var(--c-brand) / .2); box-shadow: inset 0 0 0 1px rgb(var(--c-brand) / .36);
+  }
+  .dark .tselect-opt[aria-selected="true"] { background: rgb(var(--c-brand) / .2); }
+  .dark .tselect-opt[aria-selected="true"]:hover,
+  .dark .tselect-opt[aria-selected="true"].is-active { background: rgb(var(--c-brand) / .28); }
+  .tselect-opt.is-disabled { opacity: .45; cursor: not-allowed; }
+  .tselect-opt.is-disabled:hover:not([aria-selected="true"]),
+  .tselect-opt.is-disabled.is-active:not([aria-selected="true"]) {
+    background: transparent; box-shadow: none; color: rgb(var(--c-ink-2));
+  }
 
   /* --------------------------------------------------------------- cards */
   .task-card {
@@ -457,12 +528,14 @@
       <span id="filter-pill" class="hidden shrink-0 items-center gap-1.5 rounded-full border border-brand/40 bg-brand/10 px-2 py-1 text-[11px] font-500 text-brand"></span>
 
       <!-- sort -->
-      <select id="sort" class="field hidden !w-auto !py-[7px] !text-[12px] lg:block" aria-label="排序">
-        <option value="updated">最近更新</option>
-        <option value="created">最新创建</option>
-        <option value="priority">优先级</option>
-        <option value="title">标题 A–Z</option>
-      </select>
+      <div class="hidden w-[112px] shrink-0 lg:block">
+        <select id="sort" class="hidden" tabindex="-1" aria-hidden="true" aria-label="排序">
+          <option value="updated">最近更新</option>
+          <option value="created">最新创建</option>
+          <option value="priority">优先级</option>
+          <option value="title">标题 A–Z</option>
+        </select>
+      </div>
 
       <!-- view switch -->
       <div class="segment shrink-0" role="group" aria-label="视图模式">
@@ -767,6 +840,7 @@
   function closeModal() {
     const entry = modalStack.pop();
     if (!entry) return;
+    closeTselect();
     document.body.style.overflow = '';
     entry.layer.remove();
     if (entry.restore && entry.restore.focus) { try { entry.restore.focus(); } catch (e) {} }
@@ -775,6 +849,299 @@
   }
 
   function closeAllModals() { while (modalStack.length) closeModal(); }
+
+  /* ========================================================== custom select */
+  // Native <select> stays in the DOM as the single source of truth for form
+  // values and change events; the visible control is an accessible listbox.
+  let openTselect = null;
+  let tselectSeq = 0;
+
+  function closeTselect(restoreFocus) {
+    const current = openTselect;
+    if (!current) return;
+    openTselect = null;
+    document.removeEventListener('pointerdown', current.onOutside, true);
+    window.removeEventListener('resize', current.place, true);
+    window.removeEventListener('scroll', current.onScroll, true);
+    if (current.dialog && current.dialog.getAttribute('aria-owns') === current.menu.id) {
+      if (current.prevAriaOwns !== null) current.dialog.setAttribute('aria-owns', current.prevAriaOwns);
+      else current.dialog.removeAttribute('aria-owns');
+    }
+    current.menu.remove();
+    current.inst.trigger.setAttribute('aria-expanded', 'false');
+    current.inst.trigger.removeAttribute('aria-activedescendant');
+    current.inst.trigger.removeAttribute('aria-controls');
+    current.inst.wrapper.classList.remove('is-open');
+    if (restoreFocus) current.inst.trigger.focus();
+  }
+
+  function initTselect(select, opts) {
+    if (!select || select.dataset.tselectReady) return null;
+    const options = opts || {};
+    select.dataset.tselectReady = '1';
+    select.setAttribute('tabindex', '-1');
+    select.setAttribute('aria-hidden', 'true');
+
+    const inst = { select: select, menu: null, active: -1, items: [] };
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tselect';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.id = (select.id || 'tselect-' + (++tselectSeq)) + '-trigger';
+    trigger.className = 'field tselect-trigger' + (options.triggerClass ? ' ' + options.triggerClass : '');
+    trigger.setAttribute('role', 'combobox');
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const labelId = select.getAttribute('aria-labelledby');
+    const labelText = select.getAttribute('aria-label');
+    if (labelId) trigger.setAttribute('aria-labelledby', labelId);
+    if (labelText) trigger.setAttribute('aria-label', labelText);
+    if (!labelId && !labelText) {
+      const parentLabel = trigger.closest('label');
+      const matchingLabel = parentLabel || (select.id ? document.querySelector('label[for="' + trigger.id + '"], label[for="' + select.id + '"]') : null);
+      if (matchingLabel) {
+        if (!matchingLabel.id) matchingLabel.id = trigger.id + '-label';
+        trigger.setAttribute('aria-labelledby', matchingLabel.id);
+      }
+    }
+    trigger.disabled = !!select.disabled;
+    trigger.innerHTML = '<span class="tselect-value"></span><span class="tselect-arrow" aria-hidden="true">' + icon('chevronDown', 'h-3.5 w-3.5') + '</span>';
+
+    const valueEl = trigger.querySelector('.tselect-value');
+    function selectedOption() {
+      return select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+    }
+    function updateLabel() {
+      const option = selectedOption();
+      valueEl.textContent = option ? option.textContent.trim() : '';
+      valueEl.classList.toggle('is-placeholder', !select.value);
+    }
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+    wrapper.appendChild(trigger);
+    inst.wrapper = wrapper;
+    inst.trigger = trigger;
+    inst.valueEl = valueEl;
+    inst.updateLabel = updateLabel;
+    select._tselectSync = updateLabel;
+    select.addEventListener('change', updateLabel);
+    updateLabel();
+
+    function setActive(index, scroll) {
+      const current = openTselect;
+      if (!current || current.inst !== inst) return;
+      if (!inst.items.length) return;
+      let next = index;
+      if (next < 0) next = inst.items.length - 1;
+      if (next >= inst.items.length) next = 0;
+      const item = inst.items[next];
+      if (item.disabled && inst.items.some(function (x) { return !x.disabled; })) {
+        const step = next > inst.active || index < 0 ? 1 : -1;
+        for (let guard = 0; guard < inst.items.length; guard += 1) {
+          next = (next + step + inst.items.length) % inst.items.length;
+          if (!inst.items[next].disabled) break;
+        }
+      }
+      inst.active = next;
+      inst.items.forEach(function (el, i) {
+        el.classList.toggle('is-active', i === next);
+      });
+      trigger.setAttribute('aria-activedescendant', inst.items[next].id);
+      if (scroll && inst.items[next].scrollIntoView) {
+        inst.items[next].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function place() {
+      const current = openTselect;
+      if (!current || current.inst !== inst) return;
+      const menu = current.menu;
+      const rect = trigger.getBoundingClientRect();
+      if (rect.bottom <= 0 || rect.top >= window.innerHeight || (rect.width === 0 && rect.height === 0)) {
+        closeTselect();
+        return;
+      }
+      const minWidth = Number(options.minWidth) || 0;
+      const width = Math.max(8, Math.min(Math.max(rect.width, minWidth), window.innerWidth - 16));
+      menu.style.width = width + 'px';
+      let left = rect.left;
+      if (options.align === 'end') left = rect.right - width;
+      left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
+      menu.style.left = left + 'px';
+      const gap = 6;
+      const belowAvail = Math.max(0, window.innerHeight - rect.bottom - gap - 8);
+      const aboveAvail = Math.max(0, rect.top - gap - 8);
+      // Measure the menu's natural height with the clamp removed, so repeated
+      // scroll/resize placements don't mistake a clamped height for the real one.
+      const prevMax = menu.style.maxHeight;
+      menu.style.maxHeight = 'none';
+      const natural = Math.min(300, menu.scrollHeight);
+      menu.style.maxHeight = prevMax;
+      // Open downward by default. Flip only when the menu genuinely does not fit
+      // below and the space above is larger; if neither side fits, take the
+      // larger side so the menu still opens where it can show the most rows.
+      const isBelow = !(natural > belowAvail && aboveAvail > belowAvail);
+      const chosenAvail = isBelow ? belowAvail : aboveAvail;
+      const maxHeight = Math.max(1, Math.min(300, chosenAvail));
+      menu.style.maxHeight = maxHeight + 'px';
+      menu.classList.toggle('is-above', !isBelow);
+      const menuHeight = Math.min(menu.offsetHeight, maxHeight);
+      let top = isBelow ? rect.bottom + gap : rect.top - gap - menuHeight;
+      top = Math.min(Math.max(8, top), Math.max(8, window.innerHeight - menuHeight - 8));
+      menu.style.top = top + 'px';
+    }
+
+    function choose(index) {
+      const option = select.options[index];
+      if (!option || option.disabled) return;
+      select.value = option.value;
+      updateLabel();
+      closeTselect(true);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    let typeBuffer = '';
+    let typeTimer = 0;
+    function typeahead(char) {
+      clearTimeout(typeTimer);
+      typeBuffer += char.toLowerCase();
+      typeTimer = setTimeout(function () { typeBuffer = ''; }, 600);
+      const list = inst.items;
+      if (!list.length) return;
+      const start = typeBuffer.length === 1 ? inst.active + 1 : 0;
+      for (let step = 0; step < list.length; step += 1) {
+        const i = (start + step + list.length) % list.length;
+        if (!list[i].disabled && list[i].textContent.trim().toLowerCase().indexOf(typeBuffer) === 0) {
+          setActive(i, true);
+          return;
+        }
+      }
+    }
+
+    function openMenu(startAt) {
+      if (trigger.disabled) return;
+      if (openTselect && openTselect.inst === inst) return;
+      closeTselect();
+      const selectedIndex = select.selectedIndex;
+      let start = startAt;
+      if (start === undefined) start = selectedIndex;
+      if (start === 'last') start = select.options.length - 1;
+      if (start < 0) start = 0;
+
+      const menu = document.createElement('div');
+      menu.className = 'tselect-menu scroll-thin';
+      menu.id = trigger.id + '-menu';
+      menu.setAttribute('role', 'listbox');
+      menu.tabIndex = -1;
+      const labelEl = Array.prototype.slice.call(document.querySelectorAll('label[for]')).filter(function (el) {
+        return el.getAttribute('for') === trigger.id;
+      })[0];
+      const menuLabel = labelText || (labelEl ? labelEl.textContent.replace('*', '').trim() : '');
+      if (menuLabel) menu.setAttribute('aria-label', menuLabel);
+
+      inst.items = [];
+      Array.prototype.forEach.call(select.options, function (option, index) {
+        const item = document.createElement('div');
+        item.className = 'tselect-opt' + (option.disabled ? ' is-disabled' : '');
+        item.id = menu.id + '-opt-' + index;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', String(index === selectedIndex));
+        if (option.disabled) item.setAttribute('aria-disabled', 'true');
+        item.disabled = !!option.disabled;
+        item.dataset.index = String(index);
+        const text = document.createElement('span');
+        text.className = 'tselect-opt-label';
+        text.textContent = option.textContent.trim();
+        item.appendChild(text);
+        item.insertAdjacentHTML('beforeend', icon('check', 'tselect-check'));
+        menu.appendChild(item);
+        inst.items.push(item);
+      });
+
+      trigger.setAttribute('aria-expanded', 'true');
+      trigger.setAttribute('aria-controls', menu.id);
+      wrapper.classList.add('is-open');
+
+      const dialog = trigger.closest('[role="dialog"]');
+      const prevAriaOwns = dialog ? dialog.getAttribute('aria-owns') : null;
+      if (dialog) dialog.setAttribute('aria-owns', menu.id);
+
+      document.body.appendChild(menu);
+
+      const current = {
+        inst: inst,
+        menu: menu,
+        dialog: dialog,
+        prevAriaOwns: prevAriaOwns,
+        onOutside: function (event) {
+          if (wrapper.contains(event.target) || menu.contains(event.target)) return;
+          closeTselect();
+        },
+        onScroll: function (event) {
+          if (menu.contains(event.target)) return;
+          place();
+        },
+        place: place,
+      };
+      openTselect = current;
+      inst.menu = menu;
+      place();
+      setActive(start, true);
+
+      menu.addEventListener('pointerdown', function (event) {
+        if (event.button === 0) event.preventDefault();
+      });
+      menu.addEventListener('mousemove', function (event) {
+        const item = event.target.closest('.tselect-opt');
+        if (!item) return;
+        const index = Number(item.dataset.index);
+        if (!item.classList.contains('is-disabled') && index !== inst.active) setActive(index, false);
+      });
+      menu.addEventListener('click', function (event) {
+        const item = event.target.closest('.tselect-opt');
+        if (item) choose(Number(item.dataset.index));
+      });
+
+      document.addEventListener('pointerdown', current.onOutside, true);
+      window.addEventListener('resize', current.place, true);
+      window.addEventListener('scroll', current.onScroll, true);
+    }
+
+    trigger.addEventListener('click', function () {
+      if (openTselect && openTselect.inst === inst) closeTselect(true);
+      else openMenu();
+    });
+
+    trigger.addEventListener('keydown', function (event) {
+      if (trigger.disabled || event.altKey || event.ctrlKey || event.metaKey) return;
+      const key = event.key;
+      const isOpen = openTselect && openTselect.inst === inst;
+
+      if (!isOpen) {
+        if (key === 'ArrowDown' || key === 'Enter' || key === ' ' || key === 'Spacebar') {
+          event.preventDefault(); openMenu(); return;
+        }
+        if (key === 'ArrowUp') { event.preventDefault(); openMenu('last'); return; }
+        if (key === 'Home') { event.preventDefault(); openMenu(0); return; }
+        if (key === 'End') { event.preventDefault(); openMenu('last'); return; }
+        if (key.length === 1 && key !== ' ') {
+          event.preventDefault(); openMenu(); typeahead(key);
+        }
+        return;
+      }
+
+      if (key === 'ArrowDown') { event.preventDefault(); setActive(inst.active + 1, true); }
+      else if (key === 'ArrowUp') { event.preventDefault(); setActive(inst.active - 1, true); }
+      else if (key === 'Home') { event.preventDefault(); setActive(0, true); }
+      else if (key === 'End') { event.preventDefault(); setActive(inst.items.length - 1, true); }
+      else if (key === 'Enter' || key === ' ' || key === 'Spacebar') { event.preventDefault(); choose(inst.active); }
+      else if (key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeTselect(true); }
+      else if (key === 'Tab') { closeTselect(); }
+      else if (key.length === 1) { event.preventDefault(); typeahead(key); }
+    });
+    return inst;
+  }
 
   /* ============================================================ select values */
   function sortedTasks(list) {
@@ -1604,8 +1971,8 @@
               '<div class="mb-3 flex items-center gap-2">' + icon('folder', 'h-3.5 w-3.5 text-ink3') + '<h3 class="text-[11px] font-600 uppercase tracking-[.1em] text-ink3">项目</h3></div>' +
               '<div class="grid gap-3 sm:grid-cols-2">' +
                 '<div>' +
-                  '<label class="label" for="f-project">已知项目</label>' +
-                  '<select id="f-project" data-field="project" class="field">' + projectOptions(selectedProject) + '</select>' +
+                  '<label class="label" for="f-project-trigger">已知项目</label>' +
+                  '<select id="f-project" data-field="project" class="hidden" tabindex="-1">' + projectOptions(selectedProject) + '</select>' +
                 '</div>' +
                 '<div>' +
                   '<label class="label" for="f-project-name">显示名称</label>' +
@@ -1704,6 +2071,7 @@
     const pathInput = layer.querySelector('[data-field="project_path"]');
     const nameInput = layer.querySelector('[data-field="project_name"]');
     if (projectSelect) {
+      initTselect(projectSelect, { minWidth: 160 });
       projectSelect.addEventListener('change', function () {
         const value = projectSelect.value;
         pathInput.value = value;
@@ -1713,7 +2081,10 @@
     }
     if (pathInput && nameInput) {
       pathInput.addEventListener('input', function () {
-        if (projectSelect && projectSelect.value !== pathInput.value) projectSelect.value = '';
+        if (projectSelect && projectSelect.value !== pathInput.value) {
+          projectSelect.value = '';
+          if (projectSelect._tselectSync) projectSelect._tselectSync();
+        }
         const raw = pathInput.value.trim();
         if (raw && !nameInput.dataset.touched) {
           const parts = raw.split(/[\\/]/).filter(Boolean);
@@ -2060,6 +2431,7 @@
     $('#view-board').addEventListener('click', function () { setView('board'); });
     $('#view-list').addEventListener('click', function () { setView('list'); });
     $('#sort').addEventListener('change', function (e) { state.sort = e.target.value; renderAll(); });
+    initTselect($('#sort'), { triggerClass: 'tselect-trigger--compact', align: 'end', minWidth: 144 });
 
     const search = $('#search');
     const onSearch = debounce(function () {
