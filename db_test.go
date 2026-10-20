@@ -12,11 +12,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// taskIDPattern is the new ordered task id shape: T + YYYYMMDD + 4-digit seq.
+var taskIDPattern = regexp.MustCompile(`^T[0-9]{8}[0-9]{4}$`)
 
 func mustOpen(t *testing.T, filename string) *Store {
 	t.Helper()
@@ -152,8 +157,8 @@ func TestCreateTaskAppliesDefaults(t *testing.T) {
 	store := memStore(t)
 	task := create(t, store, map[string]any{"title": "Default task", "project_path": t.TempDir()})
 
-	if !strings.HasPrefix(task.ID, "task_") {
-		t.Errorf("ID = %q, want task_ prefix", task.ID)
+	if !taskIDPattern.MatchString(task.ID) {
+		t.Errorf("ID = %q, want T<YYYYMMDD><NNNN>", task.ID)
 	}
 	if task.Status != "todo" {
 		t.Errorf("Status = %q, want todo", task.Status)
@@ -587,18 +592,106 @@ func TestParseLineRange(t *testing.T) {
 	}
 }
 
-func TestGenerateTaskIDShape(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
-		id := GenerateTaskID()
-		parts := strings.Split(id, "_")
-		if len(parts) != 3 || parts[0] != "task" || len(parts[2]) != 4 {
-			t.Fatalf("GenerateTaskID() = %q, want task_<base36>_<4 chars>", id)
+func TestCreateTaskIDsUseDailySequence(t *testing.T) {
+	store := memStore(t)
+
+	ids := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		task := create(t, store, map[string]any{"title": fmt.Sprintf("Sequenced %d", i)})
+		if !taskIDPattern.MatchString(task.ID) {
+			t.Fatalf("task %d: ID = %q, want T<YYYYMMDD><NNNN>", i, task.ID)
+		}
+		ids = append(ids, task.ID)
+	}
+
+	// All three share one date, taken from the ids themselves rather than from
+	// time.Now(), so the test cannot flake across midnight.
+	date := ids[0][1:9]
+	for i, id := range ids {
+		if id[1:9] != date {
+			t.Errorf("task %d: date = %q, want %q (id %q)", i, id[1:9], date, id)
+		}
+		wantSuffix := fmt.Sprintf("%04d", i+1)
+		if id[9:] != wantSuffix {
+			t.Errorf("task %d: suffix = %q, want %q (id %q)", i, id[9:], wantSuffix, id)
+		}
+	}
+}
+
+// TestCreateTaskIDsUniqueAcrossStores exercises the allocation loop against a
+// real file with two independent handles, the way a daemon and a CLI can race.
+func TestCreateTaskIDsUniqueAcrossStores(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tasks.db")
+	storeA := mustOpen(t, dbPath)
+	storeB := mustOpen(t, dbPath)
+
+	const perStore = 10
+	ids := make([]string, 0, 2*perStore)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*perStore)
+
+	for _, store := range []*Store{storeA, storeB} {
+		for i := 0; i < perStore; i++ {
+			wg.Add(1)
+			go func(store *Store, i int) {
+				defer wg.Done()
+				task, err := store.CreateTask(map[string]any{
+					"title": fmt.Sprintf("concurrent %d", i),
+				})
+				if err != nil {
+					errs <- err
+					return
+				}
+				mu.Lock()
+				ids = append(ids, task.ID)
+				mu.Unlock()
+			}(store, i)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if len(ids) != 2*perStore {
+		t.Fatalf("created %d tasks, want %d", len(ids), 2*perStore)
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !taskIDPattern.MatchString(id) {
+			t.Errorf("id = %q, want T<YYYYMMDD><NNNN>", id)
+		}
+		if seen[id] {
+			t.Errorf("duplicate id %q", id)
 		}
 		seen[id] = true
 	}
-	if len(seen) < 150 {
-		t.Errorf("generated only %d unique ids out of 200", len(seen))
+	if len(seen) != 2*perStore {
+		t.Errorf("%d distinct ids, want %d", len(seen), 2*perStore)
+	}
+
+	var count int
+	if err := storeA.db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2*perStore {
+		t.Errorf("row count = %d, want %d", count, 2*perStore)
+	}
+}
+
+func TestTaskIDHelpers(t *testing.T) {
+	when := time.Date(2026, time.October, 19, 23, 59, 59, 0, time.UTC)
+	prefix := taskIDPrefix(when)
+	if prefix != "T20261019" {
+		t.Errorf("taskIDPrefix = %q, want T20261019", prefix)
+	}
+	if got := formatTaskID(prefix, 1); got != "T202610190001" {
+		t.Errorf("formatTaskID(prefix, 1) = %q, want T202610190001", got)
+	}
+	if got := formatTaskID(prefix, 9999); got != "T202610199999" {
+		t.Errorf("formatTaskID(prefix, 9999) = %q, want T202610199999", got)
 	}
 }
 
@@ -1009,12 +1102,12 @@ func TestCanonicalizeAliasPrecedence(t *testing.T) {
 func TestCreateIgnoresCallerSuppliedID(t *testing.T) {
 	store := memStore(t)
 
-	task := create(t, store, map[string]any{"title": "No id please", "id": "task_attacker_chosen"})
-	if task.ID == "task_attacker_chosen" {
+	task := create(t, store, map[string]any{"title": "No id please", "id": "T202001010001"})
+	if task.ID == "T202001010001" {
 		t.Fatal("CreateTask must ignore a caller-supplied id")
 	}
-	if !strings.HasPrefix(task.ID, "task_") {
-		t.Errorf("ID = %q, want a generated task_ id", task.ID)
+	if !taskIDPattern.MatchString(task.ID) {
+		t.Errorf("ID = %q, want a generated T<YYYYMMDD><NNNN> id", task.ID)
 	}
 }
 
@@ -1723,8 +1816,8 @@ func TestLegacyDatabaseAggregatesAndUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask on legacy db: %v", err)
 	}
-	if !strings.HasPrefix(fresh.ID, "task_") {
-		t.Errorf("new id = %q, want task_ prefix", fresh.ID)
+	if !taskIDPattern.MatchString(fresh.ID) {
+		t.Errorf("new id = %q, want T<YYYYMMDD><NNNN>", fresh.ID)
 	}
 	if fresh.Status != "todo" || fresh.Priority != "medium" {
 		t.Errorf("defaults = %s/%s, want todo/medium", fresh.Status, fresh.Priority)

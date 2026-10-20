@@ -94,6 +94,7 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
 ### 字段取值规范
 - **优先级 `--priority`**：`low` | `medium` | `high` | `urgent`（默认：`medium`）
 - **流转状态 `--status`**：`backlog` | `todo` | `in_progress` | `done`（默认：`todo`）
+- **任务 ID**：由服务端自动分配，形如 `T202610190001`（`T` + 日期 + 当日四位序号，从 `0001` 起）；历史 `task_...` 形式的旧 ID 仍然有效，可直接用于 `get`/`update`/`delete`。
 
 ---
 

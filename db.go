@@ -4,13 +4,13 @@
 // database/sql with the pure-Go modernc.org/sqlite driver, so a single static
 // binary replaces the Node runtime (CGO_ENABLED=0).
 //
-// The SQLite schema, column names, millisecond timestamps and "task_" ID
-// format are byte-for-byte compatible with the Node version: an existing
-// ~/.taskview/tasks.db is opened in place, never rebuilt or migrated.
+// The SQLite schema, column names and millisecond timestamps are byte-for-byte
+// compatible with the Node version: an existing ~/.taskview/tasks.db is opened
+// in place, never rebuilt or migrated. New tasks get ordered "T<YYYYMMDD><NNNN>"
+// IDs, while legacy "task_..." IDs already in the file remain valid as-is.
 package main
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -606,22 +606,43 @@ func ParseLineRange(input string) (start, end *int64, err error) {
 	return start, end, nil
 }
 
-// GenerateTaskID mirrors src/db.js: task_<base36 millis>_<4 random chars>.
-// Two IDs generated in the same millisecond still differ thanks to the suffix.
-func GenerateTaskID() string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	suffix := make([]byte, 4)
-	if _, err := rand.Read(suffix); err != nil {
-		// Deterministic-ish fallback; only hit if the OS RNG is broken.
-		for i := range suffix {
-			suffix[i] = alphabet[(time.Now().UnixNano()+int64(i))%int64(len(alphabet))]
-		}
-	} else {
-		for i, b := range suffix {
-			suffix[i] = alphabet[int(b)%len(alphabet)]
-		}
+// Task IDs are ordered, per-day codes: "T" + YYYYMMDD + a four-digit sequence
+// starting at 0001, e.g. T202610190001. The sequence is derived from the rows
+// already stored for that day rather than from a counter table. Known limit:
+// deleting the newest task of a day frees its number, so a later task created
+// that same day can reuse it. Upgrade to a counter table if IDs must never be
+// reused.
+const taskIDDateLayout = "20060102"
+
+// taskIDPrefix returns the "T<YYYYMMDD>" prefix for the given time.
+func taskIDPrefix(now time.Time) string {
+	return "T" + now.Format(taskIDDateLayout)
+}
+
+// formatTaskID renders prefix plus a four-digit sequence, e.g. T202610190001.
+func formatTaskID(prefix string, seq int) string {
+	return fmt.Sprintf("%s%04d", prefix, seq)
+}
+
+// nextTaskIDSeq returns the highest sequence already used under prefix, or 0
+// when the prefix has no rows yet. An unparsable id is reported rather than
+// treated as zero, because restarting at 1 would silently collide with rows the
+// database already holds.
+func nextTaskIDSeq(db *sql.DB, prefix string) (int, error) {
+	var maxID sql.NullString
+	err := db.QueryRow(`SELECT MAX(id) FROM tasks WHERE id LIKE ?`, prefix+"%").Scan(&maxID)
+	if err != nil {
+		return 0, fmt.Errorf("find last task id for %s: %w", prefix, err)
 	}
-	return fmt.Sprintf("task_%s_%s", strconv.FormatInt(time.Now().UnixMilli(), 36), string(suffix))
+	if !maxID.Valid || maxID.String == "" {
+		return 0, nil
+	}
+	suffix := strings.TrimPrefix(maxID.String, prefix)
+	seq, err := strconv.Atoi(suffix)
+	if err != nil {
+		return 0, fmt.Errorf("parse task id %q for %s: %w", maxID.String, prefix, err)
+	}
+	return seq, nil
 }
 
 // ---------------------------------------------------------------- create --
@@ -709,28 +730,59 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 	}
 
 	// IDs are server-assigned; an "id" in the payload is ignored.
-	id := GenerateTaskID()
+	//
+	// One clock reading supplies both the daily prefix and the timestamps, so an
+	// insert that straddles midnight cannot pair yesterday's prefix with today's
+	// created_at.
+	now := time.Now()
+	prefix := taskIDPrefix(now)
+	ts := now.UnixMilli()
 
-	ts := time.Now().UnixMilli()
 	var closedAt any
 	if status == "done" {
 		closedAt = ts
 	}
 
-	_, err = db.Exec(`
-		INSERT INTO tasks (
-			id, project_path, project_name, title, description, status, priority,
-			file_path, line_start, line_end, code_snippet, agent_notes, tags,
-			created_at, updated_at, closed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, projectPath, projectName, title, description, status, priority,
-		filePath, lineStart, lineEnd, codeSnippet, agentNotes, tags,
-		ts, ts, closedAt)
-	if err != nil {
-		return nil, fmt.Errorf("create task: %w", err)
+	for attempt := 0; attempt < 100; attempt++ {
+		seq, err := nextTaskIDSeq(db, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("create task: %w", err)
+		}
+		if seq+1 > 9999 {
+			return nil, fmt.Errorf("daily task id space exhausted for %s: 9999 ids already used",
+				now.Format(taskIDDateLayout))
+		}
+		id := formatTaskID(prefix, seq+1)
+
+		// ON CONFLICT DO NOTHING instead of a plain INSERT: a second process
+		// racing for the same number inserts nothing, and the loop re-reads the
+		// maximum, which that process has by then advanced.
+		res, err := db.Exec(`
+			INSERT INTO tasks (
+				id, project_path, project_name, title, description, status, priority,
+				file_path, line_start, line_end, code_snippet, agent_notes, tags,
+				created_at, updated_at, closed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO NOTHING`,
+			id, projectPath, projectName, title, description, status, priority,
+			filePath, lineStart, lineEnd, codeSnippet, agentNotes, tags,
+			ts, ts, closedAt)
+		if err != nil {
+			return nil, fmt.Errorf("create task: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("create task: %w", err)
+		}
+		if affected == 1 {
+			return s.GetTask(id)
+		}
+		// Zero rows: another process took that number between our SELECT and
+		// INSERT. Try the next one.
 	}
 
-	return s.GetTask(id)
+	return nil, fmt.Errorf("create task: could not allocate a task id for %s after repeated contention",
+		prefix)
 }
 
 // ------------------------------------------------------------------- read --
