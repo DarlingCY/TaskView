@@ -25,7 +25,7 @@
   - 原生卡片拖拽流转状态（乐观更新 + 实时持久化）
   - 代码上下文抽屉查看器（带行号显示与指定行区间高亮，非语法高亮）
   - 全局搜索、标签/优先级过滤、深浅色主题切换
-- **Agent Skill 开箱即用（多平台自包含 Skill）**：提供自包含的通用 Agent 技能包（位于 [`skills/taskview`](skills/taskview)），内置 Windows、Linux 与 macOS 独立可执行程序。主流 AI 编程助手导入后即可在目标工程中直接调用，无需用户单独安装 Go/Node/SQLite 运行时或配置系统 PATH。
+- **Agent Skill 开箱即用（多平台自包含 Skill）**：提供自包含的通用 Agent 技能包（位于 [`skills/task-view`](skills/task-view)），内置 Windows、Linux 与 macOS 独立可执行程序。主流 AI 编程助手导入后即可在目标工程中直接调用，无需用户单独安装 Go/Node/SQLite 运行时或配置系统 PATH。
 
 ---
 
@@ -178,12 +178,12 @@ TaskView 提供了通用的自包含 Agent 技能包（Agent Skill），使主�
 
 ### 导入方式与目录
 
-在构建后，[`skills/taskview`](skills/taskview) 本身即为包含 Windows、Linux 与 macOS 平台可执行文件的完整技能包（位于 `skills/taskview/scripts/`）。用户或宿主软件可直接通过宿主提供的技能机制配置该目录，或将整个 `taskview` 文件夹复制至宿主识别的技能目录（形成 `<skills-dir>/taskview/SKILL.md`）并重新加载生效。
+在构建后，[`skills/task-view`](skills/task-view) 本身即为包含 Windows、Linux 与 macOS 平台可执行文件的完整技能包（位于 `skills/task-view/scripts/`）。用户或宿主软件可直接通过宿主提供的技能机制配置该目录，或将整个 `task-view` 文件夹复制至宿主识别的技能目录（形成 `<skills-dir>/task-view/SKILL.md`）并重新加载生效。
 
-- **完整导入与配置指引**：详见 [TaskView Skill 配置与导入指南](skills/taskview/README.md)。
+- **完整导入与配置指引**：详见 [TaskView Skill 配置与导入指南](skills/task-view/README.md)。
 
 > **维护者构建命令**：  
-> 若从源码修改了代码或更新了技能文档，维护者可执行以下脚本同步生成 `skills/taskview/scripts/` 内的 3 个平台可执行程序（需要 Go 1.26.5+ 编译环境）：  
+> 若从源码修改了代码或更新了技能文档，维护者可执行以下脚本同步生成 `skills/task-view/scripts/` 内的 3 个平台可执行程序（需要 Go 1.26.5+ 编译环境）：  
 > ```powershell
 > pwsh -File ./scripts/build-skills.ps1
 > ```

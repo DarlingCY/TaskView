@@ -1,7 +1,7 @@
 # Build output & binaries
 /dist/
 *.exe
-!/skills/taskview/scripts/taskview.exe
+!/skills/task-view/scripts/taskview.exe
 *.exe~
 *.dll
 *.so

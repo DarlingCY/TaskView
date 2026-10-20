@@ -1,5 +1,5 @@
 ---
-name: taskview
+name: task-view
 description: Record, track, and manage code optimizations, follow-up tasks, refactoring ideas, and latent bugs that cannot be addressed in the current turn. Uses local SQLite and provides a local Web Kanban board. Trigger when discovering secondary findings, deferred tech debt, or when managing tasks via TaskView CLI.
 ---
 
@@ -36,7 +36,7 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
      - **POSIX (Bash / Zsh)**:
        ```bash
        # 示例：将占位符替换为宿主提供的实际绝对路径，保持在目标工程 CWD 中执行
-       SKILL_ROOT='/absolute/skill/taskview'
+       SKILL_ROOT='/absolute/skill/task-view'
        case "$(uname -s)/$(uname -m)" in
          Linux/x86_64)  TASKVIEW="$SKILL_ROOT/scripts/taskview-linux-amd64" ;;
          Darwin/arm64)  TASKVIEW="$SKILL_ROOT/scripts/taskview-darwin-arm64" ;;

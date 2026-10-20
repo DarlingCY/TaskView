@@ -6,10 +6,10 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$skillDoc = Join-Path $repoRoot 'skills\taskview\SKILL.md'
-$readmeDoc = Join-Path $repoRoot 'skills\taskview\README.md'
+$skillDoc = Join-Path $repoRoot 'skills\task-view\SKILL.md'
+$readmeDoc = Join-Path $repoRoot 'skills\task-view\README.md'
 if (-not (Test-Path -LiteralPath $skillDoc) -or -not (Test-Path -LiteralPath $readmeDoc)) {
-    throw "Required documentation missing: skills/taskview/SKILL.md or README.md"
+    throw "Required documentation missing: skills/task-view/SKILL.md or README.md"
 }
 
 $origCgo, $origGoos, $origGoarch = $env:CGO_ENABLED, $env:GOOS, $env:GOARCH
@@ -44,8 +44,8 @@ try {
         }
     }
 
-    # All targets built and staged successfully; publish to skills/taskview/scripts/
-    $skillScriptsDir = Join-Path $repoRoot 'skills\taskview\scripts'
+    # All targets built and staged successfully; publish to skills/task-view/scripts/
+    $skillScriptsDir = Join-Path $repoRoot 'skills\task-view\scripts'
     if (-not (Test-Path -LiteralPath $skillScriptsDir)) { [System.IO.Directory]::CreateDirectory($skillScriptsDir) | Out-Null }
     foreach ($t in $targets) {
         $srcBin = Join-Path (Join-Path $tempRoot "$($t.OS)-$($t.Arch)") $t.Bin
