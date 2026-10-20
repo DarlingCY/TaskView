@@ -302,9 +302,10 @@
     0% { box-shadow: 0 0 0 0 rgb(var(--c-brand) / .45); }
     100% { box-shadow: 0 0 0 10px rgb(var(--c-brand) / 0); }
   }
-  .card-actions { opacity: 0; transform: translateX(4px); transition: opacity .16s ease, transform .16s ease; }
-  .task-card:hover .card-actions, .task-card:focus-within .card-actions { opacity: 1; transform: none; }
-  /* when actions appear they sit on top of the project name, so fade it out */
+  /* overlay actions: out of flow so the project name can reach the right edge at rest */
+  .card-actions { opacity: 0; transform: translateX(4px); transition: opacity .16s ease, transform .16s ease; pointer-events: none; }
+  .task-card:hover .card-actions, .task-card:focus-within .card-actions { opacity: 1; transform: none; pointer-events: auto; }
+  /* when actions appear they occupy the project's slot, so fade it out */
   .task-card:hover .card-project, .task-card:focus-within .card-project { opacity: 0; }
   .card-project { transition: opacity .16s ease; }
   .icon-btn {
@@ -1593,10 +1594,10 @@
     return '' +
       '<article class="task-card group p-3 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
         'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title + ' · ' + meta.label + ' · ' + priorityMeta.label + '优先级') + '">' +
-        '<div class="mb-1 flex items-center gap-1.5">' +
-          '<span class="card-sub shrink-0 font-mono text-[10px] tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
-          '<span class="card-project card-sub ml-auto min-w-0 truncate text-right text-[10.5px] text-ink2" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
-          '<span class="flex shrink-0 items-center gap-0.5 card-actions">' +
+        '<div class="relative mb-1 flex h-6 items-center gap-1.5">' +
+          '<span class="card-sub shrink-0 font-mono text-[10.5px] font-500 tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
+          '<span class="card-project card-sub ml-auto min-w-0 truncate text-right text-[11px] font-500 text-ink2" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
+          '<span class="card-actions absolute right-0 top-0 flex h-6 items-center gap-0.5">' +
             '<button data-act="advance" tabindex="-1" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
               'class="icon-btn h-6 w-6" style="color:rgb(var(--c-' + nextMeta.tone + '))">' + icon(next === 'done' ? 'check' : 'arrowRight', 'h-3.5 w-3.5') + '</button>' +
             '<button data-act="edit" tabindex="-1" title="编辑任务" class="icon-btn h-6 w-6">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
