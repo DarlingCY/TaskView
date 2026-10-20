@@ -1700,7 +1700,8 @@
       const tags = tagsOf(task);
       rows +=
         '<tr class="cursor-pointer border-b border-line-2/70 animate-fadeUp" data-task-id="' + attr(task.id) + '" tabindex="0" style="animation-delay:' + Math.min(index, 14) * 25 + 'ms">' +
-          '<td class="py-2.5 pl-3 pr-2">' +
+          '<td class="whitespace-nowrap py-2.5 pl-3 pr-2 font-mono text-[10.5px] tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</td>' +
+          '<td class="px-2 py-2.5">' +
             '<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-[3px] text-[11px] font-500" style="background:rgb(var(--c-' + status.tone + ') / .12); color:rgb(var(--c-' + status.tone + '))">' +
               icon(status.icon, 'h-3 w-3') + status.label + '</span>' +
           '</td>' +
@@ -1743,9 +1744,10 @@
           '<span class="ml-auto text-[11px] text-ink3">按 ' + esc(SORT_LABEL[state.sort] || state.sort) + ' 排序</span>' +
         '</div>' +
         '<div class="overflow-x-auto scroll-thin">' +
-          '<table class="w-full min-w-[900px] border-collapse text-left">' +
+          '<table class="w-full min-w-[1010px] border-collapse text-left">' +
             '<thead><tr class="border-b border-line-2 bg-surface2/40">' +
-              '<th class="py-2 pl-3 pr-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">状态</th>' +
+              '<th class="whitespace-nowrap py-2 pl-3 pr-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">任务 ID</th>' +
+              '<th class="px-2 py-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">状态</th>' +
               '<th class="px-2 py-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">优先级</th>' +
               '<th class="px-2 py-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">任务</th>' +
               '<th class="px-2 py-2 text-[10px] font-600 uppercase tracking-[.1em] text-ink3">文件上下文</th>' +
