@@ -11,7 +11,7 @@
 - **独立单二进制（Single Binary）**：基于 Go 原生开发，静态编译（`CGO_ENABLED=0`），内置 `modernc.org/sqlite` 纯 Go 数据库引擎。分发出的单一可执行文件运行**无需安装 Node.js、Go 运行时环境，也无需系统预装任何 sqlite3 动态库**。
 - **内嵌 Web 看板与按需后台启动**：`taskview ui` 启动或复用后台服务，健康检查通过后打开浏览器并返回命令提示符；可用 `server status` 检查状态、`server stop` 停止服务。进程异常退出后，下次执行 `ui` 或 `server start` 时重新启动。
   > **注意**：内置前端 SPA 目前仍通过外部 CDN 引入 Tailwind CSS 与 Google Fonts。浏览器访问时会向外部网络发起资源请求，任何未缓存的访问均需要网络连接；系统目前并非严格的网络隔离环境，离线静态资源尚未内置，待后续阶段实现资源本地化（Vendoring）。
-- **用户全局集中存储**：数据集中保存在 `~/.taskview/tasks.db`（可通过环境变量 `TASKVIEW_HOME` 自定义），CLI 命令直连 SQLite，默认记录并按当前工作目录（CWD，或通过 `--project` 显式指定）进行索引（不会向上自动探测代码仓库根目录），完全兼容历史数据表结构与 ID，无需数据迁移。
+- **用户全局集中存储**：数据集中保存在 `~/.taskview/tasks.db`（可通过环境变量 `TASKVIEW_HOME` 自定义），CLI 命令直连 SQLite，`add` / `list` / `stats` 均需显式指定 `--project`，`list` / `stats` 还需 `--project-name` 进行索引与校验（不会回退到当前工作目录，也不会向上自动探测代码仓库根目录），完全兼容历史数据表结构与 ID，无需数据迁移。
 - **本地数据存储与回环接口**：任务数据保存在用户主目录下，应用本身无任何内置远程同步或团队共享机制。Web 服务仅监听本地回环地址（127.0.0.1 / localhost），但回环绑定并不等同于身份认证，也无法防御本机其他应用的访问；同时因前端加载第三方 CDN 脚本与字体，应用并非严格的网络隔离或绝对私密。
 - **可选系统安装与 Windows 登录自启动**：支持通过 `taskview install` 将自身复制至受管目录（`~/.taskview/bin/taskview.exe`），或通过 `taskview install --autostart` 显式注册 Windows 任务计划程序实现登录后台自启，完全由用户显式选择，绝不隐式修改系统。
 - **专为 Agent 定制的数据模型**：
@@ -75,61 +75,68 @@
 
 ## 💻 命令行（CLI）用法
 
-TaskView 提供了直观直接的命令行交互。所有数据读写（`add`, `list`, `get`, `update`, `delete`, `stats`）均**直接基于本地 SQLite 进行**，无需依赖后台 Web 服务，也无需安装或配置自启。
+TaskView 提供了直观直接的命令行交互。所有数据读写（`add`, `list`, `get`, `update`, `delete`, `stats`, `projects`）均**直接基于本地 SQLite 进行**，无需安装或配置自启。
 
-> **⚠️ 重要机制：工作目录（CWD）与工程作用域**
-> - **直接 CLI 命令**：严格记录执行命令时的**当前工作目录**（CWD），或通过 `--project <path>` 显式指定路径（不会向上自动探测仓库根目录）。
+> **后台服务联动**：这些数据命令在执行前会**确保后台 Web 服务已运行**（未运行时自动启动，启动失败则报错退出）；启动提示写入 stderr，不污染命令自身的 stdout 输出。`ui` 与 `server` 命令直接管理该服务，不受此机制影响。
+
+> **⚠️ 重要机制：工程作用域（Project Scope）**
+> - **直接 CLI 命令**：`add`、`list`、`stats` 必须显式传入 `--project <path>`（不会回退到当前工作目录，也不会向上自动探测仓库根目录），路径会解析为绝对路径并清理。`list`、`stats` 还须显式传入 `--project-name <name>` 并与该路径下已记录的名称校验；`add` 的工程名称则由路径最后一级目录名自动推导（见下）。
 > - **Web 看板**：看板初始载入所有项目的任务总览（All Projects）。在 Web 界面创建新任务时，若未显式选择工程，则默认归属后台服务启动时所在的工作目录（Server CWD）；在界面中显式选择工程则以选中工程为准。调用 `taskview ui` 复用已有服务时**不会改变**已有服务的启动目录。
 
 ### 1. 创建任务 / 优化项 (`add`)
 
+> **必填工程参数**：`--project <path>`（别名 `--projectPath` / `--project_path` / `-C`）。
+> 工程名称自动取解析后路径的最后一级目录名；若该路径下已有任务，则复用已记录的名称（不会新建同名工程的第二个分组）。`add` 不支持指定名称，传入的 `--project-name` / `--projectName` 会被忽略。
+
 **Windows PowerShell 示例：**
 ```powershell
 # 极简创建
-taskview add "重构 Auth 中间件的 Token 缓存"
+taskview add "重构 Auth 中间件的 Token 缓存" --project "D:\Work\MyApp"
 
 # 附带完整代码上下文与分析建议（单行执行）
-taskview add "重构 Auth 中间件的 Token 缓存" --desc "高并发场景容易耗尽连接池" --file "src/middleware/auth.go" --lines "42-65" --priority "high" --status "todo" --notes "建议引入 LRU 内存缓存" --tags "perf,auth"
+taskview add "重构 Auth 中间件的 Token 缓存" --project "D:\Work\MyApp" --desc "高并发场景容易耗尽连接池" --file "src/middleware/auth.go" --lines "42-65" --priority "high" --status "todo" --notes "建议引入 LRU 内存缓存"
 
 # PowerShell 续行语法（使用反引号 `）
 taskview add "重构 Auth 中间件的 Token 缓存" `
+  --project "D:\Work\MyApp" `
   --desc "高并发场景容易耗尽连接池" `
   --file "src/middleware/auth.go" `
   --lines "42-65" `
   --code "token := db.Query(ctx, sql)" `
   --priority "high" `
   --status "todo" `
-  --notes "建议引入 LRU 内存缓存" `
-  --tags "perf,auth"
+  --notes "建议引入 LRU 内存缓存"
 ```
 
 **POSIX (Bash / Zsh) 示例：**
 ```bash
 taskview add "重构 Auth 中间件的 Token 缓存" \
+  --project "/home/me/work/MyApp" \
   --desc "高并发场景容易耗尽连接池" \
   --file "src/middleware/auth.go" \
   --lines "42-65" \
   --code "token := db.Query(ctx, sql)" \
   --priority "high" \
   --status "todo" \
-  --notes "建议引入 LRU 内存缓存" \
-  --tags "perf,auth"
+  --notes "建议引入 LRU 内存缓存"
 ```
 
 ### 2. 查看任务列表 (`list`)
 
-```powershell
-# 查看当前工作目录关联的任务
-taskview list
+> 同样必须传入 `--project` 与 `--project-name`，`--all` 也不能省略这两个参数。
 
-# 查看跨所有项目的全部任务
-taskview list --all
+```powershell
+# 查看指定工程的任务
+taskview list --project "D:\Work\MyApp" --project-name "MyApp"
+
+# 查看跨所有项目的全部任务（仍须提供两个工程参数用于校验）
+taskview list --all --project "D:\Work\MyApp" --project-name "MyApp"
 
 # 按状态或优先级过滤
-taskview list --status todo --priority high
+taskview list --project "D:\Work\MyApp" --project-name "MyApp" --status todo --priority high
 
 # 关键词搜索与排序（updated | created | priority | title）
-taskview list --search "auth" --sort priority
+taskview list --project "D:\Work\MyApp" --project-name "MyApp" --search "auth" --sort priority
 ```
 
 ### 3. 查看任务详情 (`get`)
@@ -156,12 +163,14 @@ taskview update <task_id> --append-notes "已完成压力测试，QPS 提升 40%
 
 ### 5. 统计与概览 (`stats`)
 
-```powershell
-# 查看当前工作目录任务统计（默认仅统计当前 CWD；跨工程全局统计请使用 --all）
-taskview stats
+> `stats` 同样必须传入 `--project` 与 `--project-name`，`--all` 也不能省略这两个参数。
 
-# 查看跨工程全局统计
-taskview stats --all
+```powershell
+# 查看指定工程的任务统计
+taskview stats --project "D:\Work\MyApp" --project-name "MyApp"
+
+# 查看跨工程全局统计（仍须提供两个工程参数用于校验）
+taskview stats --all --project "D:\Work\MyApp" --project-name "MyApp"
 ```
 
 ### 6. 删除任务 (`delete`)
@@ -169,6 +178,18 @@ taskview stats --all
 ```powershell
 taskview delete <task_id>
 ```
+
+### 7. 项目发现 (`projects`)
+
+```powershell
+# 列出全局已记录的所有工程项目（名称、路径、任务总数、未完成任务数、更新时间）
+taskview projects
+```
+
+- **全局只读**：与当前工作目录无关，一次性列出数据库中所有工程项目（按 `路径 + 名称` 分组，语义与 `GET /api/projects` 一致）。
+- **只读发现**：仅做查询展示，不修改任何任务或工程数据（执行前同样会确保后台 Web 服务已运行）。
+- **无任务不出现**：工程只有在记录了至少一个任务后才会出现在列表中；删除某工程的全部任务后，该工程也随之消失。
+- `get` / `update` / `delete` 仍通过任务全局 ID 直接操作（请先核对目标任务所属工程路径），本命令不改变这些命令的行为。
 
 ---
 
@@ -415,8 +436,8 @@ export PATH="$PATH:/path/to/TaskView/dist"
 1. **存储引擎**：
    - 纯 Go 嵌入式 SQLite 驱动（`modernc.org/sqlite`），开启 WAL 模式。
    - 数据存储路径默认为 `~/.taskview/tasks.db`，可由环境变量 `TASKVIEW_HOME` 自定义目录。
-   - 所有 CLI 数据操作（`add`、`list` 等）均直接连接 SQLite，无需启动 Web 服务。
-   - 严格沿用已有表结构（`tasks` 表与索引），以当前工作目录（或显式 `--project`）记录，兼容已有历史数据。
+   - 所有 CLI 数据操作（`add`、`list` 等）均直接连接 SQLite，并在执行前确保后台 Web 服务已运行（未运行时自动启动）。
+   - 严格沿用已有表结构（`tasks` 表与索引），以显式 `--project` 记录（`add` 的工程名称取路径最后一级目录名，`list` / `stats` 另需 `--project-name` 校验），兼容已有历史数据。
    - 新任务 ID 形如 `T<YYYYMMDD><NNNN>`（例如 `T202610190001`），即按日期分组、当日内从 `0001` 递增的序号；已存在的 `task_...` 形式的旧 ID 仍然有效，无需迁移。
 2. **服务与接口**：
    - 本地回环接口服务（`127.0.0.1`，默认端口 3333，占用时自动顺延最多 10 个端口）。

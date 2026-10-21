@@ -28,21 +28,21 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
    - **严禁使用 PATH 搜索发现**，必须直接以绝对路径调用对应平台的二进制程序：
      - **Windows (PowerShell)**:
        ```powershell
-       # 示例：将占位符替换为宿主提供的实际绝对路径，保持在目标工程 CWD 中执行
+       # 示例：将占位符替换为宿主提供的实际绝对路径
        $SkillRoot = '<host-provided absolute Skill directory>'
        $TaskView = Join-Path $SkillRoot 'scripts/taskview.exe'
-       & $TaskView list
+       & $TaskView list --project '<project absolute path>' --project-name '<project name>'
        ```
      - **POSIX (Bash / Zsh)**:
        ```bash
-       # 示例：将占位符替换为宿主提供的实际绝对路径，保持在目标工程 CWD 中执行
+       # 示例：将占位符替换为宿主提供的实际绝对路径
        SKILL_ROOT='/absolute/skill/task-view'
        case "$(uname -s)/$(uname -m)" in
          Linux/x86_64)  TASKVIEW="$SKILL_ROOT/scripts/taskview-linux-amd64" ;;
          Darwin/arm64)  TASKVIEW="$SKILL_ROOT/scripts/taskview-darwin-arm64" ;;
          *) echo "Unsupported platform: $(uname -s)/$(uname -m)"; exit 1 ;;
        esac
-       "$TASKVIEW" list
+       "$TASKVIEW" list --project '/project/absolute/path' --project-name 'project-name'
        ```
      *(注：上述路径变量仅为调用语法示例，实际执行时请将占位符替换为宿主提供的实际 Skill 根目录绝对路径)*。
    - **关于后续示例的简写记号**：在本规范后续章节中出现的 `taskview <command>`，均为上述已按平台解析出的绝对可执行文件变量（`$TaskView` 或 `"$TASKVIEW"`）的**语法简记**，绝不依赖系统全局 `PATH`。
@@ -51,9 +51,11 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
    - 在 Linux / macOS 环境下，若复制后丢失了文件可执行权限（`+x`），Agent 仅可对选定的包内程序执行 `chmod +x` 恢复执行权限；若触发 Windows SmartScreen 或 macOS 门禁隔离（Quarantine），**严禁擅自绕过安全策略**，应提示用户按操作系统标准方式确认授权。
    - **严禁**擅自执行自动安装、网络下载或修改系统 `PATH` 环境变量。
 
-### 2. 保持工作目录与项目作用域（Keep Project Scope & CWD）
-- **始终在目标工程的工作目录（CWD）中直接执行命令**（`add`、`list`、`stats` 命令亦支持显式传入 `--project <path>` 参数；`get`、`update`、`delete` 直接使用任务全局 ID 操作）。
-- **严禁** `cd` 到 TaskView 源码仓库或 Skill 根目录（Skill Root）去执行命令！TaskView 基于命令执行时的当前工作目录或 `--project` 记录工程关联（不会自动向上探测 git 仓库根目录）。切换目录会导致记录到错误的项目作用域。
+### 2. 显式工程作用域（Required Project Scope）
+- **`add` 必须显式传入 `--project <path>`**（别名：`--projectPath` / `--project_path` / `-C`）；缺失、为空或只有空白都会直接报错退出（不写库）。
+- **`list`、`stats` 必须显式传入 `--project <path>` 与 `--project-name <name>`**（同样支持上述别名，以及 `--projectName`）。任一缺失、为空或只有空白都会直接报错退出（不写库）；`--all` 也不能豁免这两个参数。
+- 路径会解析为绝对路径并清理后使用。`add` 的工程名称由路径最后一级目录名自动推导；若该路径下已有任务，则复用已记录的名称（不会新建第二个工程分组），传入的 `--project-name` 会被忽略。`list` / `stats` 的名称是**校验**而非筛选：若该路径下已记录任务，名称必须与已记录名称一致，否则报错（例如 `project name "X" does not match recorded name "Y" for <path>`）。
+- `get`、`update`、`delete` 直接使用任务全局 ID 操作；跨项目场景务必先核对任务详情中的工程路径是否一致，切勿仅因关键词匹配就误操作其他项目的任务。
 - CLI 命令直连本地 SQLite（默认存储于 `~/.taskview/tasks.db`，可通过可选环境变量 `TASKVIEW_HOME` 自定义目录）。各项目任务汇总于同一全局数据库，通过项目路径建立索引。
 
 ### 3. 用户需求范围 vs. 次要发现（Prevent Scope Creep）
@@ -64,7 +66,7 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
   - **禁止**在未实际完成并验证修改的情况下将任务标记为 `done`。只有在当前轮次确实完成了代码修改且经过验证时，方可流转为 `done`。
 
 ### 4. 任务去重与更新规范（De-duplication Before Adding）
-- 在创建新任务前，先通过 `taskview list --search "<关键词>"`（或跨项目 `taskview list --all --search "<关键词>"`）检索是否已有记录。
+- 在创建新任务前，先通过 `taskview list --project <path> --project-name <name> --search "<关键词>"`（或跨项目 `taskview list --all --project <path> --project-name <name> --search "<关键词>"`）检索是否已有记录。
 - 使用 `taskview get <task_id>` 查看详情。注意跨项目检索（`--all`）时，务必核对目标项目路径是否一致，切勿仅因关键词匹配就误向其他项目的任务追加备注。
 - 确认属于当前项目的相同或高度相关任务后，使用 `taskview update <task_id> --append-notes "<新进展/补充上下文>"` 进行追加，**切勿无休止重复创建同类任务**。
 - **切勿**自动执行 `delete` 删除任务，除非用户明确要求。
@@ -72,7 +74,7 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
 ### 5. 安全限制与系统操作红线（Safety Guardrails）
 - **严禁擅自执行系统级管理命令**：切勿在常规编码中执行 `taskview install`、`taskview install --autostart` 或 `taskview uninstall`，严禁擅自修改系统环境变量（如 `PATH`）。
 - **Web UI 与服务器管理**：
-  - 常规数据操作直连 SQLite，无需后台服务。
+  - 常规数据操作直连 SQLite，并在执行前自动确保后台 Web 服务已运行（未运行时自动启动）；启动提示输出到 stderr，不影响命令自身的 stdout 输出。
   - 仅在用户明确要求查看看板时才调用 `taskview ui`（或 `taskview ui --no-open`）。
   - 如需只读查看服务状态，使用 `taskview server status`（纯只读健康检查，不触碰数据库）。
   - 服务默认端口为 `3333`（端口冲突时自动顺延至 3334~3343），切勿硬编码假定特定端口可用。
@@ -103,11 +105,11 @@ TaskView 采用纯 Go 静态编译（无需安装 Node.js、Go 运行时或额�
 发现次要优化或潜在缺陷时录入。记录时遵循最小完整要素：包含简明标题、问题描述、代码文件及行号、真实代码证据与可落地的跟进建议（next steps）。务必严格区分已验证事实（verified）与推测分析（inferred），严禁凭空捏造上下文，切勿在缺乏实际性能瓶颈证据时妄断解决方案（如武断要求加缓存）。在具备明确上下文时尽量提供佐证：
 
 ```bash
-# 极简录入
-taskview add "重构数据库连接池配置"
+# 极简录入（--project 必填，工程名称取路径最后一级目录名）
+taskview add "重构数据库连接池配置" --project "/abs/path/to/project"
 
 # 推荐：附带问题描述、代码位置、代码片段与分析建议（单行命令）
-taskview add "优化鉴权 Token 校验性能" --desc "每次请求均实时查询数据库校验 Token，形成高并发瓶颈" --file "src/middleware/auth.go" --lines "42-65" --code "token := db.Query(ctx, sql)" --priority "high" --status "todo" --notes "建议引入本地 LRU 缓存或批量校验逻辑" --tags "perf,auth"
+taskview add "优化鉴权 Token 校验性能" --project "/abs/path/to/project" --desc "每次请求均实时查询数据库校验 Token，形成高并发瓶颈" --file "src/middleware/auth.go" --lines "42-65" --code "token := db.Query(ctx, sql)" --priority "high" --status "todo" --notes "建议引入本地 LRU 缓存或批量校验逻辑"
 ```
 
 **支持参数**：
@@ -118,8 +120,8 @@ taskview add "优化鉴权 Token 校验性能" --desc "每次请求均实时查�
 - `--priority <level>`：`low` | `medium` | `high` | `urgent`
 - `--status <status>`：`backlog` | `todo` | `in_progress` | `done`
 - `--notes <text>`：分析建议与跟进步骤
-- `--tags <a,b,c>`：逗号分隔标签
-- `--project <path>`：覆盖工程路径（默认取当前 CWD；支持 `add`、`list`、`stats` 命令）
+- `--project <path>`：**必填**。工程路径（别名 `--projectPath` / `--project_path` / `-C`），会被解析为绝对路径；支持 `add`、`list`、`stats` 命令
+- `--project-name <name>`：`list` / `stats` **必填**（别名 `--projectName`），须与该路径下已记录的名称一致；`add` 会忽略该参数（名称自动取路径最后一级目录名，路径已有任务时复用已记录名称）
 
 ---
 
@@ -128,17 +130,17 @@ taskview add "优化鉴权 Token 校验性能" --desc "每次请求均实时查�
 在创建前或排期时检索现有任务：
 
 ```bash
-# 查看当前工程目录的任务
-taskview list
+# 查看指定工程的任务（--project 与 --project-name 均为必填）
+taskview list --project "/abs/path/to/project" --project-name "my-project"
 
-# 跨所有工程查看所有任务
-taskview list --all
+# 跨所有工程查看所有任务（仍须提供两个工程参数用于校验）
+taskview list --all --project "/abs/path/to/project" --project-name "my-project"
 
 # 按状态与优先级筛选
-taskview list --status todo --priority high
+taskview list --project "/abs/path/to/project" --project-name "my-project" --status todo --priority high
 
 # 关键词检索（搜索标题、描述、备注、标签）并按优先级排序
-taskview list --search "cache" --sort priority
+taskview list --project "/abs/path/to/project" --project-name "my-project" --search "cache" --sort priority
 ```
 
 ---
@@ -174,11 +176,11 @@ taskview update <task_id> --status done
 ### 5. 查看任务统计概览 (`stats`)
 
 ```bash
-# 查看当前工程任务统计
-taskview stats
+# 查看指定工程的任务统计（--project 与 --project-name 均为必填）
+taskview stats --project "/abs/path/to/project" --project-name "my-project"
 
-# 查看跨所有工程的全局统计
-taskview stats --all
+# 查看跨所有工程的全局统计（仍须提供两个工程参数用于校验）
+taskview stats --all --project "/abs/path/to/project" --project-name "my-project"
 ```
 
 ---
@@ -193,7 +195,20 @@ taskview delete <task_id>
 
 ---
 
-### 7. 看板与服务状态（仅在用户要求时调用）
+### 7. 项目发现 (`projects`)
+
+```bash
+# 全局只读：列出数据库中所有已记录的工程项目
+taskview projects
+```
+
+- **全局只读发现**：结果与当前 CWD 无关，列出每个已记录工程的名称、路径、任务总数、未完成任务数与更新时间（按 `路径 + 名称` 分组，语义与 Web API `GET /api/projects` 一致）。该命令只查询、不修改任何数据（执行前同样会确保后台 Web 服务已运行）。
+- **无任务的工程不出现**：工程只有在记录至少一个任务后才会出现在列表中；删除某工程的全部任务后该工程随之消失。
+- **不改变既有归属语义**：`get` / `update` / `delete` 仍按任务全局 ID 直接操作，且仍需先核对目标任务的所属工程路径（避免误改其他工程的同名/相似任务）；`list` 的路径/名称行为保持不变。本命令仅用于发现工程，不能替代这些命令的归属校验。
+
+---
+
+### 8. 看板与服务状态（仅在用户要求时调用）
 
 ```bash
 # 用户明确要求查看 Web 看板时启动服务并唤起浏览器

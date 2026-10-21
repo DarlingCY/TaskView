@@ -504,14 +504,6 @@
         </div>
         <div id="priority-filters" class="grid grid-cols-2 gap-1.5"></div>
       </section>
-
-      <section>
-        <div class="mb-1.5 flex items-center justify-between px-1.5">
-          <h2 class="text-[10px] font-600 uppercase tracking-[.14em] text-ink3">标签</h2>
-          <span id="tag-count" class="text-[10px] tabular-nums text-ink3"></span>
-        </div>
-        <div id="tag-filters" class="flex flex-wrap gap-1.5"></div>
-      </section>
     </div>
 
   </aside>
@@ -617,7 +609,6 @@
     pencil: '<path d="M17.2 3.4a2.1 2.1 0 0 1 3 3L7.6 19 3.2 20.6 4.8 16.2z"/><path d="m14.5 6.1 3.4 3.4"/>',
     copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M4.6 15.4A2 2 0 0 1 3.5 14V5.6a2 2 0 0 1 2-2H14a2 2 0 0 1 1.5 1.5"/>',
     filter: '<path d="M22 3.5H2l8 9.2v6.1l4 2v-8.1z"/>',
-    tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4.2A2.2 2.2 0 0 0 2 4.2v7a2 2 0 0 0 .6 1.4l8.2 8.2a2 2 0 0 0 2.8 0l6.8-6.8a2 2 0 0 0 0-2.8z"/><circle cx="7.4" cy="7.4" r="1.3"/>',
     arrowRight: '<path d="M4.5 12h15M13 5.5l6.5 6.5-6.5 6.5"/>',
     undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H10"/>',
     alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5"/><path d="M12 16.2h.01"/>',
@@ -664,7 +655,6 @@
     projectPath: null,
     search: '',
     priorities: new Set(),
-    tags: new Set(),
     sort: 'updated',
     listPage: 0,          // 0-based page for the paginated list view
     listPageKey: '',      // filter/view/sort signature the current page belongs to
@@ -690,13 +680,6 @@
   }
 
   function attr(value) { return esc(value); }
-
-  function tagsOf(task) {
-    if (Array.isArray(task.tags)) return task.tags.slice();
-    if (Array.isArray(task.tagsList)) return task.tagsList.slice();
-    if (!task.tags) return [];
-    return String(task.tags).split(',').map(function (t) { return t.trim(); }).filter(Boolean);
-  }
 
   function splitPath(filePath) {
     const raw = String(filePath || '');
@@ -1186,13 +1169,9 @@
   function matchesFilters(task) {
     if (state.projectPath && String(task.project_path) !== String(state.projectPath)) return false;
     if (state.priorities.size && !state.priorities.has(task.priority)) return false;
-    if (state.tags.size) {
-      const list = tagsOf(task).map(function (t) { return t.toLowerCase(); });
-      for (const tag of state.tags) { if (list.indexOf(String(tag).toLowerCase()) === -1) return false; }
-    }
     const q = state.search.trim().toLowerCase();
     if (q) {
-      const haystack = [task.title, task.description, task.agent_notes, task.tags, task.file_path, task.project_name]
+      const haystack = [task.title, task.description, task.agent_notes, task.file_path, task.project_name]
         .map(function (f) { return String(f || '').toLowerCase(); }).join('\n');
       if (haystack.indexOf(q) === -1) return false;
     }
@@ -1391,7 +1370,6 @@
 
     const active = [];
     if (state.priorities.size) active.push(Array.from(state.priorities).map(function (p) { return PRIORITY_META[p].label; }).join(', '));
-    if (state.tags.size) active.push(Array.from(state.tags).map(function (t) { return '#' + t; }).join(' '));
     const pill = $('#filter-pill');
     if (active.length) {
       pill.innerHTML = icon('filter', 'h-3 w-3') + '<span class="truncate">' + esc(active.join(' · ')) + '</span>' +
@@ -1458,29 +1436,7 @@
     });
     $('#priority-filters').innerHTML = pf;
 
-    // tag filters
-    const tagMap = new Map();
-    state.tasks.forEach(function (task) {
-      tagsOf(task).forEach(function (tag) { tagMap.set(tag, (tagMap.get(tag) || 0) + 1); });
-    });
-    const tagList = Array.from(tagMap.entries()).sort(function (a, b) { return b[1] - a[1] || a[0].localeCompare(b[0]); }).slice(0, 18);
-    $('#tag-count').textContent = tagList.length ? String(tagList.length) : '';
-    let tf = '';
-    if (!tagList.length) {
-      tf = '<p class="px-1 text-[11px] text-ink3">任务添加标签后将在此处显示。</p>';
-    }
-    tagList.forEach(function (pair) {
-      const tag = pair[0], count = pair[1];
-      const on = state.tags.has(tag);
-      tf +=
-        '<button data-act="toggle-tag" data-tag="' + attr(tag) + '" aria-pressed="' + on + '" ' +
-          'class="inline-flex items-center gap-1 rounded-md border px-1.5 py-[3px] text-[11px] transition-all duration-150 ' +
-          (on ? 'border-brand/45 bg-brand/12 font-500 text-brand' : 'border-line bg-surface2/60 text-ink2 hover:border-ink3/40 hover:text-ink') + '">' +
-          '#' + esc(tag) + '<span class="tabular-nums opacity-55">' + count + '</span></button>';
-    });
-    $('#tag-filters').innerHTML = tf;
-
-    const hasFilters = state.priorities.size > 0 || state.tags.size > 0;
+    const hasFilters = state.priorities.size > 0;
     $('#clear-filters').style.opacity = hasFilters ? '1' : '.35';
     $('#clear-filters').style.pointerEvents = hasFilters ? 'auto' : 'none';
   }
@@ -1587,7 +1543,6 @@
     const priorityMeta = PRIORITY_META[task.priority] || PRIORITY_META.medium;
     const tone = priorityMeta.tone;
     const projectName = String(task.project_name || '').trim();
-    const tags = tagsOf(task);
     const next = nextStatusOf(task.status);
     const nextMeta = STATUS_META[next];
 
@@ -1615,11 +1570,6 @@
         (task.agent_notes ? '<div class="mt-2">' + agentNotesBlock(task) + '</div>' : '') +
 
         '<div class="mt-2.5 flex items-center gap-1.5">' +
-          (tags.length
-            ? tags.slice(0, 3).map(function (tag) {
-                return '<span class="chip">#' + esc(tag) + '</span>';
-              }).join('') + (tags.length > 3 ? '<span class="chip">+' + (tags.length - 3) + '</span>' : '')
-            : '') +
           '<span class="card-sub ml-auto shrink-0 text-[10px] tabular-nums text-ink2">' + relativeTime(task.updated_at) + '</span>' +
         '</div>' +
       '</article>';
@@ -1667,7 +1617,7 @@
     // result set, so a filter/search/sort change starts again from page 1 while
     // plain re-renders (refresh, edit, delete) just clamp to the available pages.
     const pageKey = state.projectPath + '|' + state.sort + '|' + state.search.trim().toLowerCase() + '|' +
-      Array.from(state.priorities).sort().join(',') + '|' + Array.from(state.tags).sort().join(',');
+      Array.from(state.priorities).sort().join(',');
     if (pageKey !== state.listPageKey) { state.listPageKey = pageKey; state.listPage = 0; }
 
     const totalPages = listPageCount(tasks.length);
@@ -1686,7 +1636,7 @@
               (state.search ? '没有匹配“' + esc(state.search) + '”的内容。请尝试其他关键词或清除筛选。' : '创建你的第一个任务，开始追踪各项目的优化工作。') +
             '</p>' +
             '<div class="mt-4 flex justify-center gap-2">' +
-              (state.search || state.priorities.size || state.tags.size ? '<button data-act="clear-filters" class="rounded-lg border border-line bg-surface2 px-3 py-2 text-[12.5px] font-500 text-ink2 transition-colors hover:text-ink">清除筛选</button>' : '') +
+              (state.search || state.priorities.size ? '<button data-act="clear-filters" class="rounded-lg border border-line bg-surface2 px-3 py-2 text-[12.5px] font-500 text-ink2 transition-colors hover:text-ink">清除筛选</button>' : '') +
               '<button data-act="new-task" class="rounded-lg bg-brand px-3 py-2 text-[12.5px] font-600 text-white shadow-brand transition-all hover:brightness-110 active:scale-95">' + icon('plus', 'h-3.5 w-3.5 inline-flex mr-1 -mt-[2px]') + '新建任务</button>' +
             '</div>' +
           '</div>' +
@@ -1697,7 +1647,6 @@
     let rows = '';
     pageTasks.forEach(function (task, index) {
       const status = STATUS_META[task.status] || STATUS_META.todo;
-      const tags = tagsOf(task);
       rows +=
         '<tr class="cursor-pointer border-b border-line-2/70 animate-fadeUp" data-task-id="' + attr(task.id) + '" tabindex="0" style="animation-delay:' + Math.min(index, 14) * 25 + 'ms">' +
           '<td class="whitespace-nowrap py-2.5 pl-3 pr-2 font-mono text-[10.5px] tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</td>' +
@@ -1888,7 +1837,6 @@
     if (action === 'new-task') { openTaskModal(null); return; }
     if (action === 'clear-filters') {
       state.priorities.clear();
-      state.tags.clear();
       state.search = '';
       $('#search').value = '';
       renderAll();
@@ -1904,12 +1852,6 @@
     if (action === 'toggle-priority') {
       const key = node.getAttribute('data-priority');
       if (state.priorities.has(key)) state.priorities.delete(key); else state.priorities.add(key);
-      renderAll();
-      return;
-    }
-    if (action === 'toggle-tag') {
-      const tag = node.getAttribute('data-tag');
-      if (state.tags.has(tag)) state.tags.delete(tag); else state.tags.add(tag);
       renderAll();
       return;
     }
@@ -2008,7 +1950,7 @@
 
   function openTaskModal(task) {
     const isEdit = !!task;
-    const t = task || { status: 'todo', priority: 'medium', tags: '' };
+    const t = task || { status: 'todo', priority: 'medium' };
     const selectedProject = isEdit ? (t.project_path || '') : (state.projectPath || '');
     const defaultName = isEdit ? (t.project_name || '') : (function () {
       const p = state.projects.find(function (x) { return x.path === selectedProject; });
@@ -2099,12 +2041,6 @@
               '</div>' +
               '<textarea id="f-notes" data-field="agent_notes" rows="4" class="field resize-y leading-relaxed !border-ai/25" placeholder="根本原因、改进建议、权衡考量、后续检查…">' + esc(t.agent_notes || '') + '</textarea>' +
             '</div>' +
-
-            '<div>' +
-              '<label class="label" for="f-tags">标签</label>' +
-              '<input id="f-tags" data-field="tags" class="field" placeholder="性能优化, 鉴权, 重构" value="' + attr(Array.isArray(t.tags) ? t.tags.join(', ') : (t.tags || '')) + '" />' +
-              '<div id="tag-preview" class="mt-2 flex flex-wrap gap-1.5"></div>' +
-            '</div>' +
           '</div>' +
 
           '<footer class="flex shrink-0 items-center justify-end gap-2 border-t border-line-2 bg-surface2/40 px-5 py-3">' +
@@ -2176,21 +2112,6 @@
     }
     if (nameInput) nameInput.addEventListener('input', function () { nameInput.dataset.touched = '1'; });
 
-    // tag preview
-    const tagsInput = layer.querySelector('[data-field="tags"]');
-    const preview = layer.querySelector('#tag-preview');
-    const knownTags = new Set();
-    state.tasks.forEach(function (item) { tagsOf(item).forEach(function (tag) { knownTags.add(tag); }); });
-    function renderTagPreview() {
-      const list = tagsInput.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
-      if (!list.length) { preview.innerHTML = ''; return; }
-      preview.innerHTML = list.map(function (tag) {
-        return '<span class="chip ' + (knownTags.has(tag) ? 'border-brand/40 text-brand' : '') + '">#' + esc(tag) + '</span>';
-      }).join('');
-    }
-    if (tagsInput) tagsInput.addEventListener('input', renderTagPreview);
-    renderTagPreview();
-
     // delete action inside the editor
     const deleteBtn = layer.querySelector('[data-delete-task]');
     if (deleteBtn && task) {
@@ -2244,7 +2165,6 @@
         line_end: lineEnd,
         code_snippet: get('code_snippet') || null,
         agent_notes: get('agent_notes') || null,
-        tags: get('tags') || null,
         project_name: get('project_name') || null,
         project_path: get('project_path') || null,
       };
@@ -2431,7 +2351,6 @@
               line_end: snapshot.line_end,
               code_snippet: snapshot.code_snippet,
               agent_notes: snapshot.agent_notes,
-              tags: snapshot.tags,
               project_name: snapshot.project_name,
               project_path: snapshot.project_path,
             };
@@ -2493,6 +2412,24 @@
     }
   }
 
+  /* =========================================================== auto refresh */
+  const AUTO_REFRESH_MS = 60000;
+  let autoRefreshTimer = null;
+
+  // Idempotent: clears any existing timer before starting a new one.
+  function startAutoRefresh() {
+    if (autoRefreshTimer !== null) clearInterval(autoRefreshTimer);
+    autoRefreshTimer = setInterval(function () {
+      if (document.visibilityState === 'hidden') return; // paused while tab is hidden
+      if (state.refreshing) return;                      // skip while a silent refresh is in flight
+      loadAll({ silent: true });
+    }, AUTO_REFRESH_MS);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') loadAll({ silent: true });
+  });
+
   /* ==================================================================== init */
   function init() {
     try {
@@ -2507,7 +2444,7 @@
     $('#new-task').addEventListener('click', function () { openTaskModal(null); });
     $('#theme-toggle').addEventListener('click', toggleTheme);
     $('#clear-filters').addEventListener('click', function () {
-      state.priorities.clear(); state.tags.clear(); renderAll();
+      state.priorities.clear(); renderAll();
     });
     $('#refresh').addEventListener('click', function () { loadAll({ silent: true }); });
     $('#view-board').addEventListener('click', function () { setView('board'); });
@@ -2554,6 +2491,7 @@
     listEl.hidden = true;
     state.view = 'board';
     loadAll();
+    startAutoRefresh();
   }
 
   if (document.readyState === 'loading') {

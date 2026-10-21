@@ -6,8 +6,10 @@
 //
 // The SQLite schema, column names and millisecond timestamps are byte-for-byte
 // compatible with the Node version: an existing ~/.taskview/tasks.db is opened
-// in place, never rebuilt or migrated. New tasks get ordered "T<YYYYMMDD><NNNN>"
-// IDs, while legacy "task_..." IDs already in the file remain valid as-is.
+// in place, and only the retired `tags` column is dropped (by rebuilding the
+// table once, see migrateDropTagsColumn). New tasks get ordered
+// "T<YYYYMMDD><NNNN>" IDs, while legacy "task_..." IDs already in the file
+// remain valid as-is.
 package main
 
 import (
@@ -94,7 +96,6 @@ type Task struct {
 	FilePath    *string `json:"file_path"`
 	CodeSnippet *string `json:"code_snippet"`
 	AgentNotes  *string `json:"agent_notes"`
-	Tags        *string `json:"tags"`
 	LineStart   *int64  `json:"line_start"`
 	LineEnd     *int64  `json:"line_end"`
 	CreatedAt   int64   `json:"created_at"`
@@ -102,12 +103,12 @@ type Task struct {
 	ClosedAt    *int64  `json:"closed_at"`
 }
 
-// MarshalJSON emits the snake_case fields plus the camelCase aliases and
-// tagsList that src/db.js produced, so existing clients keep working.
+// MarshalJSON emits the snake_case fields plus the camelCase aliases that
+// src/db.js produced, so existing clients keep working.
 //
 // Shape (matches the Node response byte for byte):
 //
-//	{ ..., "tagsList": [...], "projectPath": ..., "createdAt": ..., "closedAt": ... }
+//	{ ..., "projectPath": ..., "createdAt": ..., "closedAt": ... }
 func (t *Task) MarshalJSON() ([]byte, error) {
 	if t == nil {
 		return []byte("null"), nil
@@ -121,11 +122,7 @@ func (t *Task) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
-	// tagsList: always an array, empty rather than null.
-	tagsList := TagsToList(t.Tags)
-
 	extras, err := json.Marshal([]any{map[string]any{ //nolint:gosec // fixed key set
-		"tagsList":    tagsList,
 		"projectPath": t.ProjectPath,
 		"projectName": t.ProjectName,
 		"filePath":    t.FilePath,
@@ -177,16 +174,16 @@ type ListOptions struct {
 	ProjectPath string // empty or "all" means "use the current directory"
 	Status      string // comma separated; empty means no status filter
 	Priority    string // comma separated; empty means no priority filter
-	Search      string // case-insensitive substring over title/description/notes/tags/file
+	Search      string // case-insensitive substring over title/description/notes/file
 	Sort        string // updated | created | priority | title
 	All         bool   // ignore the project filter
 	Limit       int    // 0 means DefaultLimit; negative means unlimited
 }
 
-// schema is byte-compatible with the Node implementation's CREATE statements,
-// so an existing database is adopted as-is.
-const schema = `
-CREATE TABLE IF NOT EXISTS tasks (
+// taskTableBody is the column list of the tasks table, in schema order. It is
+// the single source of truth for the CREATE TABLE statement and for the
+// rebuild the tags migration performs.
+const taskTableBody = `
   id            TEXT PRIMARY KEY,
   project_path  TEXT NOT NULL,
   project_name  TEXT NOT NULL,
@@ -199,18 +196,27 @@ CREATE TABLE IF NOT EXISTS tasks (
   line_end      INTEGER,
   code_snippet  TEXT,
   agent_notes   TEXT,
-  tags          TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   closed_at     INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_project_path ON tasks(project_path);
-CREATE INDEX IF NOT EXISTS idx_tasks_status        ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_created_at    ON tasks(created_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_updated_at    ON tasks(updated_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_priority      ON tasks(priority);
 `
+
+// taskIndexes are the indexes owned by the tasks table. The tags migration
+// rebuilds the table, which drops them, so the same list is replayed verbatim
+// on the new table.
+var taskIndexes = []string{
+	"CREATE INDEX IF NOT EXISTS idx_tasks_project_path ON tasks(project_path)",
+	"CREATE INDEX IF NOT EXISTS idx_tasks_status        ON tasks(status)",
+	"CREATE INDEX IF NOT EXISTS idx_tasks_created_at    ON tasks(created_at)",
+	"CREATE INDEX IF NOT EXISTS idx_tasks_updated_at    ON tasks(updated_at)",
+	"CREATE INDEX IF NOT EXISTS idx_tasks_priority      ON tasks(priority)",
+}
+
+// schema creates the tasks table and its indexes. It matches the Node
+// implementation's CREATE statements minus the retired `tags` column, so an
+// existing database is adopted as-is.
+var schema = "CREATE TABLE IF NOT EXISTS tasks (" + taskTableBody + ");\n" +
+	strings.Join(taskIndexes, ";\n") + ";"
 
 var orderClauses = map[string]string{
 	"updated":  "updated_at DESC, created_at DESC",
@@ -237,7 +243,6 @@ var fieldAliases = map[string]string{
 	"codeSnippet":  "code_snippet",
 	"agent_notes":  "agent_notes",
 	"agentNotes":   "agent_notes",
-	"tags":         "tags",
 	"project_path": "project_path",
 	"projectPath":  "project_path",
 	"project_name": "project_name",
@@ -367,8 +372,102 @@ func OpenStore(filename string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialise schema: %w", err)
 	}
+	// A database created before tags were retired still carries the column; the
+	// migration rebuilds the table without it. On an already-migrated database
+	// this is a cheap no-op.
+	if err := migrateDropTagsColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	return &Store{db: db, FilePath: resolved}, nil
+}
+
+// migrateDropTagsColumn removes the legacy `tags` column from the tasks
+// table.
+//
+// SQLite cannot drop a column safely across the versions TaskView supports, so
+// the table is rebuilt: the rows are copied into a fresh table with the
+// current schema and the old one is swapped out. The tag values are discarded
+// on purpose - tags are no longer part of the data model.
+//
+// The migration is idempotent: a database whose tasks table has no `tags`
+// column is left completely untouched.
+func migrateDropTagsColumn(db *sql.DB) error {
+	has, err := tableHasColumn(db, "tasks", "tags")
+	if err != nil {
+		return err
+	}
+	if !has {
+		return nil
+	}
+
+	// BEGIN IMMEDIATE takes the write lock before anything is touched, so a
+	// second process opening the same database waits on the busy timeout
+	// instead of racing through the rebuild.
+	if _, err := db.Exec("BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin tags migration: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = db.Exec("ROLLBACK")
+		}
+	}()
+
+	// Re-check under the write lock: another process may have migrated the
+	// database between the first probe and this transaction.
+	has, err = tableHasColumn(db, "tasks", "tags")
+	if err != nil {
+		return err
+	}
+	if has {
+		steps := []string{
+			"CREATE TABLE tasks_new (" + taskTableBody + ")",
+			"INSERT INTO tasks_new (" + taskColumns + ") SELECT " + taskColumns + " FROM tasks",
+			"DROP TABLE tasks",
+			"ALTER TABLE tasks_new RENAME TO tasks",
+		}
+		for _, step := range steps {
+			if _, err := db.Exec(step); err != nil {
+				return fmt.Errorf("migrate tags column: %w", err)
+			}
+		}
+		for _, index := range taskIndexes {
+			if _, err := db.Exec(index); err != nil {
+				return fmt.Errorf("recreate index after tags migration: %w", err)
+			}
+		}
+	}
+
+	if _, err := db.Exec("COMMIT"); err != nil {
+		return fmt.Errorf("commit tags migration: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// tableHasColumn reports whether the named table has the named column.
+func tableHasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("inspect %s columns: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	return false, nil
 }
 
 // Close releases the underlying database handle. sql.DB.Close is already
@@ -389,58 +488,6 @@ func (s *Store) conn() (*sql.DB, error) {
 }
 
 // ----------------------------------------------------------- conversions --
-
-// TagsToList splits the comma-separated tags column into a trimmed, non-empty
-// slice. Always returns a non-nil slice.
-func TagsToList(tags *string) []string {
-	list := []string{}
-	if tags == nil {
-		return list
-	}
-	for _, part := range strings.Split(*tags, ",") {
-		if part = strings.TrimSpace(part); part != "" {
-			list = append(list, part)
-		}
-	}
-	return list
-}
-
-// normalizeTags accepts a string or []any/[]string and returns canonical
-// "a,b,c" form, or nil when there are no tags.
-func normalizeTags(value any) (*string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	var raws []string
-	switch v := value.(type) {
-	case string:
-		raws = strings.Split(v, ",")
-	case []string:
-		raws = v
-	case []any:
-		for _, item := range v {
-			raws = append(raws, fmt.Sprint(item))
-		}
-	default:
-		return nil, newValidationError("Invalid tags: expected a comma separated string or an array")
-	}
-
-	seen := make(map[string]bool, len(raws))
-	list := make([]string, 0, len(raws))
-	for _, raw := range raws {
-		tag := strings.TrimSpace(raw)
-		if tag == "" || seen[tag] {
-			continue
-		}
-		seen[tag] = true
-		list = append(list, tag)
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
-	joined := strings.Join(list, ",")
-	return &joined, nil
-}
 
 // toStringPtr trims and converts a value to *string, treating nil as null.
 func toStringPtr(value any) (*string, error) {
@@ -696,10 +743,6 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	tags, err := normalizeTags(canonical["tags"])
-	if err != nil {
-		return nil, err
-	}
 	lineStart, err := toIntPtr(canonical["line_start"], "line_start")
 	if err != nil {
 		return nil, err
@@ -760,12 +803,12 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 		res, err := db.Exec(`
 			INSERT INTO tasks (
 				id, project_path, project_name, title, description, status, priority,
-				file_path, line_start, line_end, code_snippet, agent_notes, tags,
+				file_path, line_start, line_end, code_snippet, agent_notes,
 				created_at, updated_at, closed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO NOTHING`,
 			id, projectPath, projectName, title, description, status, priority,
-			filePath, lineStart, lineEnd, codeSnippet, agentNotes, tags,
+			filePath, lineStart, lineEnd, codeSnippet, agentNotes,
 			ts, ts, closedAt)
 		if err != nil {
 			return nil, fmt.Errorf("create task: %w", err)
@@ -788,7 +831,7 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 // ------------------------------------------------------------------- read --
 
 const taskColumns = `id, project_path, project_name, title, description, status, priority,
-	file_path, line_start, line_end, code_snippet, agent_notes, tags,
+	file_path, line_start, line_end, code_snippet, agent_notes,
 	created_at, updated_at, closed_at`
 
 type scanner interface {
@@ -800,14 +843,13 @@ func scanTask(row scanner) (*Task, error) {
 		task                    Task
 		description, filePath   sql.NullString
 		codeSnippet, agentNotes sql.NullString
-		tags                    sql.NullString
 		lineStart, lineEnd      sql.NullInt64
 		closedAt                sql.NullInt64
 	)
 	err := row.Scan(
 		&task.ID, &task.ProjectPath, &task.ProjectName, &task.Title,
 		&description, &task.Status, &task.Priority,
-		&filePath, &lineStart, &lineEnd, &codeSnippet, &agentNotes, &tags,
+		&filePath, &lineStart, &lineEnd, &codeSnippet, &agentNotes,
 		&task.CreatedAt, &task.UpdatedAt, &closedAt,
 	)
 	if err != nil {
@@ -818,7 +860,6 @@ func scanTask(row scanner) (*Task, error) {
 	task.FilePath = nullString(filePath)
 	task.CodeSnippet = nullString(codeSnippet)
 	task.AgentNotes = nullString(agentNotes)
-	task.Tags = nullString(tags)
 	task.LineStart = nullInt(lineStart)
 	task.LineEnd = nullInt(lineEnd)
 	task.ClosedAt = nullInt(closedAt)
@@ -907,10 +948,9 @@ func (s *Store) ListTasks(opts ListOptions) ([]Task, error) {
 	if term := strings.TrimSpace(opts.Search); term != "" {
 		where = append(where,
 			`(LOWER(title) LIKE ? OR LOWER(IFNULL(description, '')) LIKE ? OR
-			  LOWER(IFNULL(agent_notes, '')) LIKE ? OR LOWER(IFNULL(tags, '')) LIKE ? OR
-			  LOWER(IFNULL(file_path, '')) LIKE ?)`)
+			  LOWER(IFNULL(agent_notes, '')) LIKE ? OR LOWER(IFNULL(file_path, '')) LIKE ?)`)
 		like := "%" + strings.ToLower(term) + "%"
-		args = append(args, like, like, like, like, like)
+		args = append(args, like, like, like, like)
 	}
 
 	order, ok := orderClauses[strings.ToLower(strings.TrimSpace(opts.Sort))]
@@ -985,6 +1025,36 @@ func (s *Store) GetProjects() ([]Project, error) {
 		return nil, fmt.Errorf("get projects: %w", err)
 	}
 	return projects, nil
+}
+
+// ProjectNames lists the distinct project names recorded at path.
+func (s *Store) ProjectNames(path string) ([]string, error) {
+	db, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT project_name
+		FROM tasks
+		WHERE `+projectPathClause("project_path")+`
+		ORDER BY project_name COLLATE NOCASE ASC`, path)
+	if err != nil {
+		return nil, fmt.Errorf("get project names: %w", err)
+	}
+	defer rows.Close()
+
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("get project names: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get project names: %w", err)
+	}
+	return names, nil
 }
 
 // GetStats counts tasks per status. Pass an empty projectPath for a global
@@ -1103,14 +1173,6 @@ func (s *Store) UpdateTask(id string, fields map[string]any) (*Task, error) {
 			}
 			sets = append(sets, "priority = ?")
 			args = append(args, priority)
-
-		case "tags":
-			tags, err := normalizeTags(value)
-			if err != nil {
-				return nil, err
-			}
-			sets = append(sets, "tags = ?")
-			args = append(args, tags)
 
 		case "project_path":
 			raw, err := requiredString(canonical, "project_path")

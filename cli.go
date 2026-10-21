@@ -311,10 +311,71 @@ func renderList(w io.Writer, tasks []Task, showProject bool, c ColorConfig) {
 	}
 }
 
+func renderProjects(w io.Writer, projects []Project, c ColorConfig) {
+	if len(projects) == 0 {
+		fmt.Fprintf(w, "%sNo projects found.%s\n", c.Dim, c.Reset)
+		return
+	}
+
+	nameW, tasksW, openW, updatedW := 7, 5, 4, 7
+	var totalTasks, openTasks int64
+	for _, p := range projects {
+		if d := displayWidth(p.Name); d > nameW {
+			nameW = d
+		}
+		if d := len(strconv.FormatInt(p.TotalTasks, 10)); d > tasksW {
+			tasksW = d
+		}
+		if d := len(strconv.FormatInt(p.OpenTasks, 10)); d > openW {
+			openW = d
+		}
+		if d := displayWidth(relativeTime(p.UpdatedAt)); d > updatedW {
+			updatedW = d
+		}
+		totalTasks += p.TotalTasks
+		openTasks += p.OpenTasks
+	}
+
+	header := strings.Join([]string{
+		padEnd("PROJECT", nameW),
+		padEnd("TASKS", tasksW),
+		padEnd("OPEN", openW),
+		padEnd("UPDATED", updatedW),
+		"PATH",
+	}, "  ")
+	fmt.Fprintf(w, "%s%s%s\n", c.Dim, header, c.Reset)
+
+	for _, p := range projects {
+		row := strings.Join([]string{
+			padEnd(p.Name, nameW),
+			padEnd(strconv.FormatInt(p.TotalTasks, 10), tasksW),
+			padEnd(strconv.FormatInt(p.OpenTasks, 10), openW),
+			padEnd(relativeTime(p.UpdatedAt), updatedW),
+			fmt.Sprintf("%s%s%s", c.Dim, p.Path, c.Reset),
+		}, "  ")
+		fmt.Fprintln(w, row)
+	}
+
+	sepLen := len(header)
+	if sepLen > 100 {
+		sepLen = 100
+	}
+	fmt.Fprintf(w, "%s%s%s\n", c.Dim, strings.Repeat("-", sepLen), c.Reset)
+	projectPlural := "s"
+	if len(projects) == 1 {
+		projectPlural = ""
+	}
+	taskPlural := "s"
+	if totalTasks == 1 {
+		taskPlural = ""
+	}
+	fmt.Fprintf(w, "%s%d project%s - %d task%s, %d open%s\n",
+		c.Dim, len(projects), projectPlural, totalTasks, taskPlural, openTasks, c.Reset)
+}
+
 func renderTask(w io.Writer, task *Task, c ColorConfig) {
 	sc := colorStatus(task.Status, c)
 	pc := colorPriority(task.Priority, c)
-	tagList := TagsToList(task.Tags)
 
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s%s%s\n", c.Bold, task.Title, c.Reset)
@@ -331,13 +392,6 @@ func renderTask(w io.Writer, task *Task, c ColorConfig) {
 	fmt.Fprintf(w, "Project   %s %s%s%s\n", task.ProjectName, c.Dim, task.ProjectPath, c.Reset)
 	if loc := locationLabel(task); loc != "" {
 		fmt.Fprintf(w, "File      %s\n", loc)
-	}
-	if len(tagList) > 0 {
-		var tagsFormatted []string
-		for _, t := range tagList {
-			tagsFormatted = append(tagsFormatted, fmt.Sprintf("%s#%s%s", c.Magenta, t, c.Reset))
-		}
-		fmt.Fprintf(w, "Tags      %s\n", strings.Join(tagsFormatted, " "))
 	}
 	fmt.Fprintf(w, "Created   %s%s (%s)%s\n", c.Dim, time.UnixMilli(task.CreatedAt).Local().Format("1/2/2006, 3:04:05 PM"), relativeTime(task.CreatedAt), c.Reset)
 	fmt.Fprintf(w, "Updated   %s%s (%s)%s\n", c.Dim, time.UnixMilli(task.UpdatedAt).Local().Format("1/2/2006, 3:04:05 PM"), relativeTime(task.UpdatedAt), c.Reset)
@@ -372,16 +426,22 @@ func getHelp(c ColorConfig) string {
 
 %sCOMMANDS%s
   %sadd%s <title>            Create a task
-  %slist%s                  List tasks for the current project
+  %slist%s                  List tasks for a project (--project/--project-name required)
   %sget%s <id>              Show full task details
   %supdate%s <id>            Update a task
   %sdelete%s <id>            Delete a task
   %sstats%s                 Show task counts
+  %sprojects%s              List all recorded projects (read-only, global)
   %sui%s                     Start or open the local web UI (background server)
   %sserver%s <command>       Manage background server (start, stop, status)
   %sinstall%s               Install TaskView executable to managed directory
   %suninstall%s             Uninstall TaskView executable and remove autostart
   %shelp%s                   Show this help
+
+%sBACKGROUND SERVER%s
+  Data commands (add, list, get, update, delete, stats, projects) make sure
+  the background server is running, starting it automatically when needed.
+  The ui and server commands manage that server directly and are exempt.
 
 %sSERVER COMMANDS%s
   %sstart%s [--port N]       Start background server (default 3333)
@@ -399,16 +459,29 @@ func getHelp(c ColorConfig) string {
   --priority <level>         low | medium | high | urgent
   --status <status>          backlog | todo | in_progress | done
   --notes <text>             Agent notes
-  --tags <a,b,c>             Comma separated tags
   --code <text>              Code snippet to attach
-  --project <path>           Project directory (defaults to cwd)
+  --project <path>           (required) Project directory (resolved absolute path)
+  --project-name <name>      Ignored for add: the project name is derived from
+                             the last element of the resolved --project path
+                             (a name already recorded at that path is reused)
 
 %sLIST OPTIONS%s
+  --project <path>           (required) Project directory to scope the list to
+  --project-name <name>      (required) Project name; must match the name
+                             already recorded at that path
   --all                      Include tasks from every project
   --status <status>          Filter by status
   --priority <level>         Filter by priority
-  --search <text>            Search title/description/notes/tags
+  --search <text>            Search title/description/notes
   --sort <key>               updated | created | priority | title
+
+%sSTATS%s
+  --project and --project-name are required (as for list), even with --all.
+
+%sPROJECTS%s
+  taskview projects is global and read-only: it lists every recorded project
+  (name, path, total/open tasks, last updated) regardless of the current
+  directory. Projects appear only after their first task is recorded.
 
 %sUPDATE OPTIONS%s
   --title <text>             Change the title
@@ -416,7 +489,6 @@ func getHelp(c ColorConfig) string {
   --priority <level>         low | medium | high | urgent
   --notes <text>             Replace agent notes
   --append-notes <text>      Append to agent notes
-  --tags <a,b,c>             Replace tags
   --desc <text>              Replace description
   --file <path>              Replace file path
   --lines <range>            Replace line range
@@ -426,8 +498,9 @@ func getHelp(c ColorConfig) string {
   --no-open                  Do not open a browser
 
 %sEXAMPLES%s
-  %staskview add "Refactor auth middleware" --priority high --tags backend,security%s
-  %staskview list --status in_progress --all%s
+  %staskview add "Refactor auth middleware" --project . --priority high%s
+  %staskview list --status in_progress --all --project . --project-name taskview%s
+  %staskview projects%s
   %staskview ui%s
   %staskview server status%s
   %staskview install --autostart%s
@@ -446,6 +519,8 @@ func getHelp(c ColorConfig) string {
 		c.Cyan, c.Reset,
 		c.Cyan, c.Reset,
 		c.Cyan, c.Reset,
+		c.Cyan, c.Reset,
+		c.Bold, c.Reset,
 		c.Bold, c.Reset,
 		c.Cyan, c.Reset,
 		c.Cyan, c.Reset,
@@ -456,6 +531,9 @@ func getHelp(c ColorConfig) string {
 		c.Bold, c.Reset,
 		c.Bold, c.Reset,
 		c.Bold, c.Reset,
+		c.Bold, c.Reset,
+		c.Bold, c.Reset,
+		c.Dim, c.Reset,
 		c.Dim, c.Reset,
 		c.Dim, c.Reset,
 		c.Dim, c.Reset,
@@ -494,9 +572,9 @@ var commandKnownFlags = map[string]map[string]bool{
 		"priority": true,
 		"status":   true,
 		"notes":    true, "agentNotes": true, "agent_notes": true,
-		"tags": true, "tag": true,
 		"code": true, "snippet": true, "codeSnippet": true, "code_snippet": true,
 		"project": true, "projectPath": true, "project_path": true, "C": true,
+		"project-name": true, "projectName": true,
 		"help": true, "h": true,
 	},
 	"list": {
@@ -506,6 +584,7 @@ var commandKnownFlags = map[string]map[string]bool{
 		"search":   true, "q": true,
 		"sort":    true,
 		"project": true, "projectPath": true, "project_path": true, "C": true,
+		"project-name": true, "projectName": true,
 		"help": true, "h": true,
 	},
 	"get": {
@@ -517,7 +596,6 @@ var commandKnownFlags = map[string]map[string]bool{
 		"priority": true,
 		"notes":    true, "agentNotes": true, "agent_notes": true,
 		"append-notes": true, "appendNotes": true,
-		"tags": true, "tag": true,
 		"desc": true, "description": true,
 		"file":  true,
 		"lines": true, "line": true,
@@ -529,6 +607,10 @@ var commandKnownFlags = map[string]map[string]bool{
 	"stats": {
 		"all": true, "a": true,
 		"project": true, "projectPath": true, "project_path": true, "C": true,
+		"project-name": true, "projectName": true,
+		"help": true, "h": true,
+	},
+	"projects": {
 		"help": true, "h": true,
 	},
 	"ui": {
@@ -751,6 +833,8 @@ func canonicalCommand(cmd string) string {
 		return "delete"
 	case "stats", "stat":
 		return "stats"
+	case "projects":
+		return "projects"
 	case "ui", "serve", "web":
 		return "ui"
 	case "server":
@@ -784,11 +868,114 @@ func validateFlagsForCommand(canonicalCmd string, rawFlags map[string]string) er
 	return nil
 }
 
+// requiredProjectFlag reads a value flag, treating a bare "--flag" (parsed as
+// "true") or a blank value as absent.
+func requiredProjectFlag(flags map[string]string, names ...string) string {
+	v := strings.TrimSpace(getFlag(flags, names...))
+	if v == "true" {
+		return ""
+	}
+	return v
+}
+
+// resolveRequiredProject validates the required --project flag and resolves
+// the path. A blank flag or a value of literal "true" (flag passed without an
+// argument) is rejected with the supplied usage line.
+func resolveRequiredProject(flags map[string]string, stderr io.Writer, usageLine string, c ColorConfig) (string, bool) {
+	rawPath := requiredProjectFlag(flags, "project", "projectPath", "project_path", "C")
+	if rawPath == "" {
+		fmt.Fprintf(stderr, "%sError:%s --project is required.\n%s\n", c.Red, c.Reset, usageLine)
+		return "", false
+	}
+
+	path, err := resolveProjectPath(rawPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s %s\n", c.Red, c.Reset, err.Error())
+		return "", false
+	}
+	return path, true
+}
+
+// requireProjectScope validates the required --project / --project-name pair
+// and resolves the path. A blank flag or a value of literal "true" (flag passed
+// without an argument) is rejected. The name must match the name already
+// recorded at that path; a path with no tasks yet adopts any name.
+func requireProjectScope(store *Store, flags map[string]string, stderr io.Writer, usage string, c ColorConfig) (string, string, bool) {
+	usageLine := fmt.Sprintf("%sUsage: %s --project <path> --project-name <name>%s", c.Dim, usage, c.Reset)
+
+	path, ok := resolveRequiredProject(flags, stderr, usageLine, c)
+	if !ok {
+		return "", "", false
+	}
+	name := requiredProjectFlag(flags, "project-name", "projectName")
+	if name == "" {
+		fmt.Fprintf(stderr, "%sError:%s --project-name is required.\n%s\n", c.Red, c.Reset, usageLine)
+		return "", "", false
+	}
+
+	recorded, err := store.ProjectNames(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s %s\n", c.Red, c.Reset, err.Error())
+		return "", "", false
+	}
+	for _, r := range recorded {
+		if r == name {
+			return path, name, true
+		}
+	}
+	if len(recorded) > 0 {
+		quoted := make([]string, len(recorded))
+		for i, r := range recorded {
+			quoted[i] = fmt.Sprintf("%q", r)
+		}
+		label := "recorded name"
+		if len(quoted) > 1 {
+			label = "recorded names"
+		}
+		fmt.Fprintf(stderr, "%sError:%s project name %q does not match %s %s for %s\n",
+			c.Red, c.Reset, name, label, strings.Join(quoted, ", "), path)
+		return "", "", false
+	}
+
+	return path, name, true
+}
+
+// requireAddProject validates the required --project flag for add and picks
+// the project name: an existing recorded name for that path is reused, and only
+// a path with no tasks yet adopts the directory name. Any --project-name
+// supplied to add is ignored.
+func requireAddProject(store *Store, flags map[string]string, stderr io.Writer, usage string, c ColorConfig) (string, string, bool) {
+	usageLine := fmt.Sprintf("%sUsage: %s --project <path> [--desc \"...\"] [--priority high]%s", c.Dim, usage, c.Reset)
+
+	path, ok := resolveRequiredProject(flags, stderr, usageLine, c)
+	if !ok {
+		return "", "", false
+	}
+
+	derived := baseName(path)
+	recorded, err := store.ProjectNames(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s %s\n", c.Red, c.Reset, err.Error())
+		return "", "", false
+	}
+	if len(recorded) == 0 {
+		return path, derived, true
+	}
+	// Several names on one path is unexpected; prefer the derived name, else
+	// the first as ordered by ProjectNames (ORDER BY name COLLATE NOCASE).
+	for _, r := range recorded {
+		if r == derived {
+			return path, r, true
+		}
+	}
+	return path, recorded[0], true
+}
+
 func cmdAdd(stdout, stderr io.Writer, store *Store, flags map[string]string, positional []string, c ColorConfig) int {
 	title := strings.TrimSpace(strings.Join(positional, " "))
 	if title == "" {
 		fmt.Fprintf(stderr, "%sError:%s task title is required.\n", c.Red, c.Reset)
-		fmt.Fprintf(stderr, "%sUsage: taskview add <title> [--desc \"...\"] [--priority high]%s\n", c.Dim, c.Reset)
+		fmt.Fprintf(stderr, "%sUsage: taskview add <title> --project <path> [--desc \"...\"] [--priority high]%s\n", c.Dim, c.Reset)
 		return 1
 	}
 
@@ -799,8 +986,15 @@ func cmdAdd(stdout, stderr io.Writer, store *Store, flags map[string]string, pos
 		return 1
 	}
 
+	projectPath, projectName, ok := requireAddProject(store, flags, stderr, "taskview add <title>", c)
+	if !ok {
+		return 1
+	}
+
 	data := map[string]any{
-		"title": title,
+		"title":        title,
+		"project_path": projectPath,
+		"project_name": projectName,
 	}
 	if v := getFlag(flags, "desc", "description"); v != "" {
 		data["description"] = v
@@ -826,12 +1020,6 @@ func cmdAdd(stdout, stderr io.Writer, store *Store, flags map[string]string, pos
 	if v := getFlag(flags, "notes", "agentNotes", "agent_notes"); v != "" {
 		data["agent_notes"] = v
 	}
-	if v := getFlag(flags, "tags", "tag"); v != "" {
-		data["tags"] = v
-	}
-	if proj := getFlag(flags, "project", "projectPath", "project_path", "C"); proj != "" && proj != "true" {
-		data["project_path"] = proj
-	}
 
 	task, err := store.CreateTask(data)
 	if err != nil {
@@ -853,8 +1041,14 @@ func cmdAdd(stdout, stderr io.Writer, store *Store, flags map[string]string, pos
 
 func cmdList(stdout, stderr io.Writer, store *Store, flags map[string]string, boolFlags map[string]bool, c ColorConfig) int {
 	allProjects := getBoolFlag(boolFlags, "all", "a") || getFlag(flags, "all", "a") == "true"
+
+	projectPath, _, ok := requireProjectScope(store, flags, stderr, "taskview list", c)
+	if !ok {
+		return 1
+	}
+
 	opts := ListOptions{
-		ProjectPath: getFlag(flags, "project", "projectPath", "project_path", "C"),
+		ProjectPath: projectPath,
 		Status:      getFlag(flags, "status"),
 		Priority:    getFlag(flags, "priority"),
 		Search:      getFlag(flags, "search", "q"),
@@ -932,9 +1126,6 @@ func cmdUpdate(stdout, stderr io.Writer, store *Store, flags map[string]string, 
 			fields["agent_notes"] = appendNotes
 		}
 	}
-	if hasFlag(flags, "tags", "tag") {
-		fields["tags"] = getFlag(flags, "tags", "tag")
-	}
 	if hasFlag(flags, "desc", "description") {
 		fields["description"] = getFlag(flags, "desc", "description")
 	}
@@ -967,7 +1158,7 @@ func cmdUpdate(stdout, stderr io.Writer, store *Store, flags map[string]string, 
 
 	if len(fields) == 0 {
 		fmt.Fprintf(stderr, "%sError:%s nothing to update.\n", c.Red, c.Reset)
-		fmt.Fprintf(stderr, "%sProvide at least one of --status, --priority, --title, --notes, --tags, --desc, --file, --lines%s\n", c.Dim, c.Reset)
+		fmt.Fprintf(stderr, "%sProvide at least one of --status, --priority, --title, --notes, --desc, --file, --lines%s\n", c.Dim, c.Reset)
 		return 1
 	}
 
@@ -1021,19 +1212,15 @@ func cmdDelete(stdout, stderr io.Writer, store *Store, positional []string, c Co
 
 func cmdStats(stdout, stderr io.Writer, store *Store, flags map[string]string, boolFlags map[string]bool, c ColorConfig) int {
 	allProjects := getBoolFlag(boolFlags, "all", "a") || getFlag(flags, "all", "a") == "true"
-	project := getFlag(flags, "project", "projectPath", "project_path", "C")
+
+	projectPath, _, ok := requireProjectScope(store, flags, stderr, "taskview stats", c)
+	if !ok {
+		return 1
+	}
+
 	scope := ""
 	if !allProjects {
-		if project != "" && project != "true" {
-			scope = project
-		} else {
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(stderr, "%sError:%s failed to get working directory: %s\n", c.Red, c.Reset, err.Error())
-				return 1
-			}
-			scope = cwd
-		}
+		scope = projectPath
 	}
 
 	stats, err := store.GetStats(scope)
@@ -1061,6 +1248,22 @@ func cmdStats(stdout, stderr io.Writer, store *Store, flags map[string]string, b
 	fmt.Fprintf(stdout, "  Done        %s%d%s\n", c.Green, stats.Done, c.Reset)
 	fmt.Fprintf(stdout, "  Open        %d %s(%d%% complete)%s\n", stats.Open, c.Dim, pct, c.Reset)
 	fmt.Fprintln(stdout)
+	return 0
+}
+
+func cmdProjects(stdout, stderr io.Writer, store *Store, positional []string, c ColorConfig) int {
+	if len(positional) > 0 {
+		fmt.Fprintf(stderr, "%sError:%s unexpected argument \"%s\"\n", c.Red, c.Reset, positional[0])
+		return 1
+	}
+
+	projects, err := store.GetProjects()
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s %s\n", c.Red, c.Reset, err.Error())
+		return 1
+	}
+
+	renderProjects(stdout, projects, c)
 	return 0
 }
 
@@ -1373,11 +1576,40 @@ func cmdUI(stdout, stderr io.Writer, flags map[string]string, boolFlags map[stri
 
 func isTaskCommand(cmd string) bool {
 	switch cmd {
-	case "add", "list", "get", "update", "delete", "stats":
+	case "add", "list", "get", "update", "delete", "stats", "projects":
 		return true
 	default:
 		return false
 	}
+}
+
+// ensureServerRunning makes sure the background web server is running before a
+// data command does its work: it probes the managed server status and starts
+// the server when it is not already up. The start notice goes to stderr (the
+// stdout parameter is intentionally unused) so the command's own stdout stays
+// parseable.
+func ensureServerRunning(stdout, stderr io.Writer, c ColorConfig) bool {
+	state, err := lifecycleManagedServerStatus()
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s failed to check background server: %s\n", c.Red, c.Reset, err.Error())
+		return false
+	}
+	if state != nil {
+		return true
+	}
+
+	state, err = lifecycleEnsureBackgroundServer(3333)
+	if err != nil {
+		fmt.Fprintf(stderr, "%sError:%s failed to ensure background server: %s\n", c.Red, c.Reset, err.Error())
+		return false
+	}
+	if state == nil {
+		fmt.Fprintf(stderr, "%sError:%s failed to ensure background server: no server state returned\n", c.Red, c.Reset)
+		return false
+	}
+
+	fmt.Fprintf(stderr, "%sStarted TaskView server at %s (PID %d)%s\n", c.Dim, state.URL, state.PID, c.Reset)
+	return true
 }
 
 // RunCLI executes command line parsing and dispatch.
@@ -1425,6 +1657,13 @@ func RunCLI(argv []string, store *Store, stdout, stderr io.Writer) int {
 
 	// For task commands, ensure store is open
 	if isTaskCommand(cmd) && store == nil {
+		// Data commands must run against a live background server. The check is
+		// skipped when a store is already injected (tests and embedding
+		// callers): those stay hermetic and never spawn a server.
+		if !ensureServerRunning(stdout, stderr, c) {
+			return 1
+		}
+
 		var err error
 		store, err = OpenStore("")
 		if err != nil {
@@ -1447,6 +1686,8 @@ func RunCLI(argv []string, store *Store, stdout, stderr io.Writer) int {
 		return cmdDelete(stdout, stderr, store, args, c)
 	case "stats":
 		return cmdStats(stdout, stderr, store, parsed.Flags, parsed.BoolFlags, c)
+	case "projects":
+		return cmdProjects(stdout, stderr, store, args, c)
 	default:
 		fmt.Fprintf(stderr, "%sError:%s unknown command \"%s\"\n", c.Red, c.Reset, rawCmd)
 		fmt.Fprintf(stderr, "%sRun %staskview help%s for usage.%s\n", c.Dim, c.Reset, c.Dim, c.Reset)

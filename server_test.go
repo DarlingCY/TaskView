@@ -292,7 +292,7 @@ func TestTasksCRUD(t *testing.T) {
 	})
 
 	t.Run("POST /api/tasks creates task", func(t *testing.T) {
-		body := `{"title":"HTTP Test Task","priority":"high","status":"todo","tags":["api","test"]}`
+		body := `{"title":"HTTP Test Task","priority":"high","status":"todo"}`
 		req := testReq(http.MethodPost, "/api/tasks", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -385,7 +385,6 @@ func TestTasksCRUD(t *testing.T) {
 			"lineEnd": null,
 			"codeSnippet": null,
 			"agentNotes": null,
-			"tags": null,
 			"projectPath": "C:\\Workspace\\TaskView",
 			"projectName": "TaskView"
 		}`
@@ -408,7 +407,7 @@ func TestTasksCRUD(t *testing.T) {
 		if err != nil || dbTask == nil {
 			t.Fatalf("failed to retrieve task from store: %v", err)
 		}
-		if dbTask.Description != nil || dbTask.FilePath != nil || dbTask.LineStart != nil || dbTask.LineEnd != nil || dbTask.CodeSnippet != nil || dbTask.AgentNotes != nil || dbTask.Tags != nil {
+		if dbTask.Description != nil || dbTask.FilePath != nil || dbTask.LineStart != nil || dbTask.LineEnd != nil || dbTask.CodeSnippet != nil || dbTask.AgentNotes != nil {
 			t.Fatalf("expected all nullable fields to be cleared, got: %+v", dbTask)
 		}
 	})

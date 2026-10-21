@@ -251,7 +251,6 @@ var writableTaskFields = map[string]bool{
 	"codeSnippet":  true,
 	"agent_notes":  true,
 	"agentNotes":   true,
-	"tags":         true,
 	"project_path": true,
 	"projectPath":  true,
 	"project_name": true,

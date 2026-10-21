@@ -169,7 +169,7 @@ func TestCreateTaskAppliesDefaults(t *testing.T) {
 	if task.ClosedAt != nil {
 		t.Errorf("ClosedAt = %v, want nil", *task.ClosedAt)
 	}
-	if task.Description != nil || task.FilePath != nil || task.Tags != nil ||
+	if task.Description != nil || task.FilePath != nil ||
 		task.AgentNotes != nil || task.CodeSnippet != nil ||
 		task.LineStart != nil || task.LineEnd != nil {
 		t.Error("optional fields should default to NULL")
@@ -237,34 +237,6 @@ func TestCreateTaskWithDoneStatusSetsClosedAt(t *testing.T) {
 	}
 	if *task.ClosedAt != task.CreatedAt {
 		t.Errorf("ClosedAt = %d, want %d", *task.ClosedAt, task.CreatedAt)
-	}
-}
-
-func TestCreateTaskNormalizesTags(t *testing.T) {
-	store := memStore(t)
-
-	task := create(t, store, map[string]any{"title": "Tagged", "tags": "backend, api ,backend,"})
-	if task.Tags == nil || *task.Tags != "backend,api" {
-		t.Fatalf("Tags = %v, want backend,api", task.Tags)
-	}
-	if got := TagsToList(task.Tags); !reflect.DeepEqual(got, []string{"backend", "api"}) {
-		t.Errorf("TagsToList = %v, want [backend api]", got)
-	}
-
-	fromArray := create(t, store, map[string]any{"title": "Array tags", "tags": []any{"a", "b", "a"}})
-	if fromArray.Tags == nil || *fromArray.Tags != "a,b" {
-		t.Errorf("array tags = %v, want a,b", fromArray.Tags)
-	}
-
-	empty := create(t, store, map[string]any{"title": "No tags", "tags": "  ,  "})
-	if empty.Tags != nil {
-		t.Errorf("Tags = %q, want NULL", *empty.Tags)
-	}
-}
-
-func TestTagsToListNeverReturnsNil(t *testing.T) {
-	if got := TagsToList(nil); got == nil || len(got) != 0 {
-		t.Fatalf("TagsToList(nil) = %v, want empty non-nil slice", got)
 	}
 }
 
@@ -433,7 +405,6 @@ func TestUpdateTaskClearsNullableFields(t *testing.T) {
 		"description":  "desc",
 		"file_path":    "a.go",
 		"line_start":   float64(1),
-		"tags":         "x",
 		"agent_notes":  "note",
 		"code_snippet": "code",
 	})
@@ -442,7 +413,6 @@ func TestUpdateTaskClearsNullableFields(t *testing.T) {
 		"description":  nil,
 		"file_path":    nil,
 		"line_start":   nil,
-		"tags":         nil,
 		"agent_notes":  nil,
 		"code_snippet": nil,
 	})
@@ -450,7 +420,7 @@ func TestUpdateTaskClearsNullableFields(t *testing.T) {
 		t.Fatalf("UpdateTask: %v", err)
 	}
 	if updated.Description != nil || updated.FilePath != nil || updated.LineStart != nil ||
-		updated.Tags != nil || updated.AgentNotes != nil || updated.CodeSnippet != nil {
+		updated.AgentNotes != nil || updated.CodeSnippet != nil {
 		t.Errorf("explicit nulls should clear fields, got %+v", updated)
 	}
 }
@@ -776,7 +746,7 @@ func TestListTasksFilters(t *testing.T) {
 		}
 		create(t, store, merged)
 	}
-	with(map[string]any{"title": "Fix auth bug", "description": "login breaks", "priority": "urgent", "status": "todo", "tags": "backend"})
+	with(map[string]any{"title": "Fix auth bug", "description": "login breaks", "priority": "urgent", "status": "todo"})
 	with(map[string]any{"title": "Write docs", "priority": "low", "status": "done", "file_path": "README.md"})
 
 	count := func(opts ListOptions, want int, label string) {
@@ -961,7 +931,7 @@ func TestOptionalFieldsMarshalAsExplicitNull(t *testing.T) {
 	}
 
 	nullable := []string{
-		"description", "file_path", "code_snippet", "agent_notes", "tags",
+		"description", "file_path", "code_snippet", "agent_notes",
 		"line_start", "line_end", "closed_at",
 	}
 	for _, key := range nullable {
@@ -1335,7 +1305,6 @@ func TestTaskMarshalJSONShape(t *testing.T) {
 		"line_start":  float64(2),
 		"line_end":    float64(8),
 		"agent_notes": "notes",
-		"tags":        "x,y",
 		"status":      "done",
 	})
 
@@ -1351,7 +1320,7 @@ func TestTaskMarshalJSONShape(t *testing.T) {
 
 	// snake_case fields
 	for _, key := range []string{"id", "project_path", "project_name", "title", "status", "priority",
-		"description", "file_path", "code_snippet", "agent_notes", "tags",
+		"description", "file_path", "code_snippet", "agent_notes",
 		"line_start", "line_end", "created_at", "updated_at", "closed_at"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("missing snake_case key %q in %s", key, encoded)
@@ -1359,15 +1328,12 @@ func TestTaskMarshalJSONShape(t *testing.T) {
 	}
 	// camelCase aliases
 	for _, key := range []string{"projectPath", "projectName", "filePath", "lineStart", "lineEnd",
-		"codeSnippet", "agentNotes", "createdAt", "updatedAt", "closedAt", "tagsList"} {
+		"codeSnippet", "agentNotes", "createdAt", "updatedAt", "closedAt"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("missing camelCase alias %q in %s", key, encoded)
 		}
 	}
 
-	if got["tagsList"].([]any)[0] != "x" {
-		t.Errorf("tagsList = %v, want [x y]", got["tagsList"])
-	}
 	if got["projectPath"] != got["project_path"] {
 		t.Errorf("projectPath alias mismatch")
 	}
@@ -1384,23 +1350,7 @@ func TestTaskMarshalJSONShape(t *testing.T) {
 	}
 }
 
-func TestTaskMarshalJSONEmitsEmptyTagsList(t *testing.T) {
-	store := memStore(t)
-	task := create(t, store, map[string]any{"title": "no tags"})
-
-	encoded, err := json.Marshal(task)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"tagsList":[]`) {
-		t.Errorf("expected empty tagsList array in %s", encoded)
-	}
-	if !strings.Contains(string(encoded), `"tags":null`) {
-		t.Errorf("expected explicit null tags in %s", encoded)
-	}
-}
-
-func TestProjectAndStatsJSONTags(t *testing.T) {
+func TestProjectAndStatsJSONShape(t *testing.T) {
 	project, err := json.Marshal(Project{Path: "/p", Name: "n", TotalTasks: 2, OpenTasks: 1, UpdatedAt: 99})
 	if err != nil {
 		t.Fatalf("marshal project: %v", err)
@@ -1428,7 +1378,6 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	created := create(t, first, map[string]any{
 		"title":  "Durable",
 		"status": "in_progress",
-		"tags":   "keep",
 	})
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -1607,7 +1556,6 @@ type legacyRow struct {
 	FilePath    *string
 	CodeSnippet *string
 	AgentNotes  *string
-	Tags        *string
 	LineStart   *int64
 	LineEnd     *int64
 	CreatedAt   int64
@@ -1621,7 +1569,8 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 
 	store := mustOpen(t, path)
 
-	// The Node schema must already satisfy us: no migration, no rebuild.
+	// The Node schema must already satisfy us: apart from the retired `tags`
+	// column, which the migration drops, no rebuild happens.
 	defaults := map[string]string{}
 	rows, err := store.db.Query(`SELECT name, dflt_value FROM pragma_table_info('tasks')`)
 	if err != nil {
@@ -1644,13 +1593,16 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 
 	for _, column := range []string{"id", "project_path", "project_name", "title", "description",
 		"status", "priority", "file_path", "line_start", "line_end", "code_snippet",
-		"agent_notes", "tags", "created_at", "updated_at", "closed_at"} {
+		"agent_notes", "created_at", "updated_at", "closed_at"} {
 		if _, ok := defaults[column]; !ok {
 			t.Errorf("legacy table is missing column %q", column)
 		}
 	}
-	if len(defaults) != 16 {
-		t.Errorf("legacy table has %d columns, want 16", len(defaults))
+	if _, ok := defaults["tags"]; ok {
+		t.Error("legacy table still has a tags column after the migration")
+	}
+	if len(defaults) != 15 {
+		t.Errorf("legacy table has %d columns, want 15", len(defaults))
 	}
 	if defaults["status"] != "'todo'" || defaults["priority"] != "'medium'" {
 		t.Errorf("column defaults = status %q priority %q, want 'todo'/'medium'",
@@ -1677,7 +1629,6 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 		FilePath:    strPtr("src/db.js"),
 		CodeSnippet: strPtr("createTask(data) {\n  // legacy\n}"),
 		AgentNotes:  strPtr("note one\nnote two"),
-		Tags:        strPtr("backend,legacy"),
 		LineStart:   intPtr(238),
 		LineEnd:     intPtr(277),
 		CreatedAt:   1792377253188,
@@ -1706,9 +1657,6 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 	if !eqStr(first.AgentNotes, want.AgentNotes) {
 		t.Errorf("AgentNotes = %v, want %q", first.AgentNotes, *want.AgentNotes)
 	}
-	if !eqStr(first.Tags, want.Tags) {
-		t.Errorf("Tags = %v, want %q", first.Tags, *want.Tags)
-	}
 	if !equalIntPtr(first.LineStart, want.LineStart) || !equalIntPtr(first.LineEnd, want.LineEnd) {
 		t.Errorf("line range = %v..%v, want 238..277", first.LineStart, first.LineEnd)
 	}
@@ -1718,9 +1666,6 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 	}
 	if first.ClosedAt != nil {
 		t.Errorf("ClosedAt = %d, want NULL for an in_progress task", *first.ClosedAt)
-	}
-	if got := TagsToList(first.Tags); !reflect.DeepEqual(got, []string{"backend", "legacy"}) {
-		t.Errorf("TagsToList = %v, want [backend legacy]", got)
 	}
 }
 
@@ -1736,7 +1681,7 @@ func TestLegacyNullColumnsStayNull(t *testing.T) {
 		t.Fatal("legacy task not found")
 	}
 	if task.Description != nil || task.FilePath != nil || task.CodeSnippet != nil ||
-		task.AgentNotes != nil || task.Tags != nil || task.LineStart != nil || task.LineEnd != nil {
+		task.AgentNotes != nil || task.LineStart != nil || task.LineEnd != nil {
 		t.Errorf("NULL columns did not stay NULL: %+v", task)
 	}
 	if task.Status != "done" {
@@ -1862,6 +1807,327 @@ func TestLegacyDatabaseAggregatesAndUpdates(t *testing.T) {
 	if scoped.Total != 1 || scoped.ProjectPath == nil || filepath.Clean(*scoped.ProjectPath) != filepath.Clean(tempProject) {
 		t.Errorf("temp project stats = %+v, want a single task scoped to the temp dir", scoped)
 	}
+}
+
+// ------------------------------------------------------- tags migration --
+//
+// The `tags` column was retired from the data model. A database written by an
+// older TaskView still carries it, so the store rebuilds the table without it
+// on open. The schema below is written out inline - the pre-migration shape -
+// so the test does not depend on the repository history.
+
+// legacyTagsSchema is the tasks table (and its indexes) as it looked before
+// tags were retired.
+const legacyTagsSchema = `
+CREATE TABLE tasks (
+  id            TEXT PRIMARY KEY,
+  project_path  TEXT NOT NULL,
+  project_name  TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  description   TEXT,
+  status        TEXT DEFAULT 'todo',
+  priority      TEXT DEFAULT 'medium',
+  file_path     TEXT,
+  line_start    INTEGER,
+  line_end      INTEGER,
+  code_snippet  TEXT,
+  agent_notes   TEXT,
+  tags          TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  closed_at     INTEGER
+);
+
+CREATE INDEX idx_tasks_project_path ON tasks(project_path);
+CREATE INDEX idx_tasks_status        ON tasks(status);
+CREATE INDEX idx_tasks_created_at    ON tasks(created_at);
+CREATE INDEX idx_tasks_updated_at    ON tasks(updated_at);
+CREATE INDEX idx_tasks_priority      ON tasks(priority);
+`
+
+// legacyTaskColumns is the pre-migration column list, `tags` included.
+const legacyTaskColumns = `id, project_path, project_name, title, description, status, priority,
+	file_path, line_start, line_end, code_snippet, agent_notes, tags,
+	created_at, updated_at, closed_at`
+
+// legacyTagsRows are the rows the pre-migration database is seeded with. They
+// mix NULLs, multi-line text, quotes and non-ASCII characters so a lossy
+// rebuild would be visible.
+var legacyTagsRows = [][]any{
+	{
+		"task_legacy_0001", `C:\dev\TaskView`, "TaskView", "Legacy task from Node",
+		"created by src/db.js", "in_progress", "urgent", "src/db.js",
+		int64(238), int64(277), "createTask(data) {\n  // legacy\n}", "note one\nnote two",
+		"backend,legacy", int64(1792377253188), int64(1792377253188), nil,
+	},
+	{
+		"task_legacy_0002", `C:\dev\TaskView`, "TaskView", "标签 «quoted»",
+		nil, "done", "low", nil, nil, nil, nil, nil, nil,
+		int64(1792377253190), int64(1792377253190), int64(1792377253190),
+	},
+}
+
+// writeLegacyTagsDB creates a database in the pre-migration shape and seeds it
+// with the supplied rows.
+func writeLegacyTagsDB(t *testing.T, path string, rows [][]any) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(legacyTagsSchema); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(`INSERT INTO tasks (`+legacyTaskColumns+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row...); err != nil {
+			t.Fatalf("insert legacy row: %v", err)
+		}
+	}
+}
+
+// dumpTasks reads every row of the tasks table as a column/value map, so two
+// dumps can be compared field by field.
+func dumpTasks(t *testing.T, db *sql.DB, columns string) []map[string]string {
+	t.Helper()
+
+	rows, err := db.Query(`SELECT ` + columns + ` FROM tasks ORDER BY id`)
+	if err != nil {
+		t.Fatalf("select tasks: %v", err)
+	}
+	defer rows.Close()
+
+	names, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("task columns: %v", err)
+	}
+
+	var dump []map[string]string
+	for rows.Next() {
+		cells := make([]any, len(names))
+		pointers := make([]any, len(names))
+		for i := range cells {
+			pointers[i] = &cells[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			t.Fatalf("scan task row: %v", err)
+		}
+		record := make(map[string]string, len(names))
+		for i, cell := range cells {
+			record[names[i]] = printableCell(cell)
+		}
+		dump = append(dump, record)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate task rows: %v", err)
+	}
+	return dump
+}
+
+// printableCell renders a scanned cell so NULLs and empty strings stay
+// distinguishable.
+func printableCell(cell any) string {
+	switch v := cell.(type) {
+	case nil:
+		return "<null>"
+	case []byte:
+		return string(v)
+	case string:
+		return v
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// taskIndexNames returns the names of the indexes owned by the tasks table.
+func taskIndexNames(t *testing.T, db *sql.DB) map[string]bool {
+	t.Helper()
+
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_tasks_%'`)
+	if err != nil {
+		t.Fatalf("query indexes: %v", err)
+	}
+	defer rows.Close()
+
+	found := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan index: %v", err)
+		}
+		found[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate indexes: %v", err)
+	}
+	return found
+}
+
+// TestMigrationDropsTagsColumnAndPreservesEveryOtherField opens a database
+// written in the pre-migration shape and checks that the tags column is gone
+// while every other value survives the rebuild untouched.
+func TestMigrationDropsTagsColumnAndPreservesEveryOtherField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	writeLegacyTagsDB(t, path, legacyTagsRows)
+
+	before := dumpLegacyTasks(t, path)
+	if len(before) != len(legacyTagsRows) {
+		t.Fatalf("legacy rows = %d, want %d", len(before), len(legacyTagsRows))
+	}
+
+	store := mustOpen(t, path)
+
+	has, err := tableHasColumn(store.db, "tasks", "tags")
+	if err != nil {
+		t.Fatalf("tableHasColumn: %v", err)
+	}
+	if has {
+		t.Error("tasks table still has a tags column after the migration")
+	}
+
+	after := dumpTasks(t, store.db, taskColumns)
+	if len(after) != len(before) {
+		t.Fatalf("row count after migration = %d, want %d", len(after), len(before))
+	}
+	for i := range before {
+		for column, value := range before[i] {
+			if column == "tags" {
+				continue // deliberately discarded
+			}
+			got, ok := after[i][column]
+			if !ok {
+				t.Errorf("row %d lost column %q", i, column)
+				continue
+			}
+			if got != value {
+				t.Errorf("row %d column %q = %q after migration, want %q", i, column, got, value)
+			}
+		}
+	}
+
+	// Every index the schema defines must exist on the rebuilt table.
+	indexes := taskIndexNames(t, store.db)
+	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_status",
+		"idx_tasks_created_at", "idx_tasks_updated_at", "idx_tasks_priority"} {
+		if !indexes[want] {
+			t.Errorf("missing index %s after the migration (found: %v)", want, indexes)
+		}
+	}
+
+	// The migrated rows are readable through the regular store API.
+	tasks, err := store.ListTasks(ListOptions{All: true})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != len(legacyTagsRows) {
+		t.Fatalf("listed %d tasks, want %d", len(tasks), len(legacyTagsRows))
+	}
+	migrated, err := store.GetTask("task_legacy_0001")
+	if err != nil || migrated == nil {
+		t.Fatalf("GetTask after the migration: %v", err)
+	}
+	if migrated.Title != "Legacy task from Node" || migrated.Status != "in_progress" {
+		t.Errorf("migrated task = %+v, want the legacy title and status", migrated)
+	}
+}
+
+// TestMigrationIsIdempotentOnAnAlreadyMigratedDatabase opens the same database
+// repeatedly: the second and third open must be no-ops that lose nothing.
+func TestMigrationIsIdempotentOnAnAlreadyMigratedDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	writeLegacyTagsDB(t, path, legacyTagsRows)
+
+	reference := dumpLegacyTasks(t, path)
+
+	for open := 1; open <= 3; open++ {
+		store := mustOpen(t, path)
+
+		has, err := tableHasColumn(store.db, "tasks", "tags")
+		if err != nil {
+			t.Fatalf("open %d: tableHasColumn: %v", open, err)
+		}
+		if has {
+			t.Errorf("open %d: tasks table still has a tags column", open)
+		}
+
+		got := dumpTasks(t, store.db, taskColumns)
+		if len(got) != len(reference) {
+			t.Fatalf("open %d: %d rows, want %d", open, len(got), len(reference))
+		}
+		for i := range reference {
+			for column, value := range reference[i] {
+				if column == "tags" {
+					continue
+				}
+				if got[i][column] != value {
+					t.Errorf("open %d: row %d column %q = %q, want %q",
+						open, i, column, got[i][column], value)
+				}
+			}
+		}
+
+		tasks, err := store.ListTasks(ListOptions{All: true})
+		if err != nil {
+			t.Fatalf("open %d: ListTasks: %v", open, err)
+		}
+		if len(tasks) != len(legacyTagsRows) {
+			t.Errorf("open %d: listed %d tasks, want %d", open, len(tasks), len(legacyTagsRows))
+		}
+
+		if err := store.Close(); err != nil {
+			t.Fatalf("open %d: close: %v", open, err)
+		}
+	}
+}
+
+// TestSearchWorksAfterTheTagsMigration proves the search path no longer looks
+// at tags: the retired tag value is not searchable, everything else is.
+func TestSearchWorksAfterTheTagsMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	writeLegacyTagsDB(t, path, legacyTagsRows)
+
+	store := mustOpen(t, path)
+
+	found, err := store.ListTasks(ListOptions{All: true, Search: "node"})
+	if err != nil {
+		t.Fatalf("search by title: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "task_legacy_0001" {
+		t.Errorf("search by title = %v, want the legacy task", titles(found))
+	}
+
+	found, err = store.ListTasks(ListOptions{All: true, Search: "created by"})
+	if err != nil {
+		t.Fatalf("search by description: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "task_legacy_0001" {
+		t.Errorf("search by description = %v, want the legacy task", titles(found))
+	}
+
+	// The old tag value is gone with the column, so it must not match.
+	found, err = store.ListTasks(ListOptions{All: true, Search: "backend"})
+	if err != nil {
+		t.Fatalf("search by former tag: %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("search by the discarded tag value = %v, want no matches", titles(found))
+	}
+}
+
+// dumpLegacyTasks snapshots a pre-migration database: it opens the file
+// directly, reads every row and closes the handle again.
+func dumpLegacyTasks(t *testing.T, path string) []map[string]string {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer db.Close()
+	return dumpTasks(t, db, legacyTaskColumns)
 }
 
 // ---------------------------------------------------------------- helpers --
