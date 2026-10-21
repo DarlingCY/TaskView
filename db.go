@@ -39,8 +39,17 @@ var (
 const (
 	DefaultStatus   = "todo"
 	DefaultPriority = "medium"
-	DefaultLimit    = 500
-	BusyTimeoutMS   = 5000
+
+	// MaxListLimit bounds the page size a listing may ask for, MinListLimit
+	// keeps a page from being empty. A page is therefore never empty and
+	// never unbounded, so a client can always page through a result set.
+	MaxListLimit = 500
+	MinListLimit = 1
+
+	// DefaultLimit is the page size used when a caller does not ask for one.
+	DefaultLimit = MaxListLimit
+
+	BusyTimeoutMS = 5000
 
 	// MaxLineNumber bounds line_start/line_end. Source files are far below this,
 	// and the cap keeps every value exactly representable in the float64 that
@@ -178,6 +187,7 @@ type ListOptions struct {
 	Sort        string // updated | created | priority | title
 	All         bool   // ignore the project filter
 	Limit       int    // 0 means DefaultLimit; negative means unlimited
+	Offset      int    // rows to skip; negative values are treated as zero
 }
 
 // taskTableBody is the column list of the tasks table, in schema order. It is
@@ -218,11 +228,16 @@ var taskIndexes = []string{
 var schema = "CREATE TABLE IF NOT EXISTS tasks (" + taskTableBody + ");\n" +
 	strings.Join(taskIndexes, ";\n") + ";"
 
+// orderClauses maps a sort name onto its SQL ORDER BY clause.
+//
+// Every clause ends with the task id, which is unique. Without it two tasks
+// that share a timestamp keep an arbitrary relative order, and a paged result
+// set could show the same task twice or skip one entirely.
 var orderClauses = map[string]string{
-	"updated":  "updated_at DESC, created_at DESC",
-	"created":  "created_at DESC",
-	"priority": "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, updated_at DESC",
-	"title":    "title COLLATE NOCASE ASC",
+	"updated":  "updated_at DESC, created_at DESC, id ASC",
+	"created":  "created_at DESC, id ASC",
+	"priority": "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, updated_at DESC, id ASC",
+	"title":    "title COLLATE NOCASE ASC, id ASC",
 }
 
 // fieldAliases maps every accepted input key to its column. Both snake_case
@@ -305,10 +320,40 @@ func projectPathClause(column string) string {
 	return column + " = ?"
 }
 
-func baseName(p string) string {
-	base := filepath.Base(p)
+// NormalizeProjectPath validates a project path the caller has to name
+// explicitly and returns its cleaned, absolute form.
+//
+// Unlike resolveProjectPath it never falls back to the working directory: a
+// server's working directory is the directory it was installed in, so an
+// implicit scope would silently file tasks under a project the user never
+// named. A missing or relative path is therefore a validation error.
+func NormalizeProjectPath(input string) (string, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", newValidationError("project_path is required and must be an absolute path")
+	}
+	if !filepath.IsAbs(trimmed) {
+		return "", newValidationError("project_path %q must be an absolute path", trimmed)
+	}
+	return filepath.Clean(trimmed), nil
+}
+
+// ProjectNameFromPath derives a project's display name from its path: the
+// last directory component ("C:\dev\my-app" becomes "my-app").
+//
+// A volume root ("C:\" or "/") has no directory component of its own, so the
+// volume name is used instead of the whole path.
+func ProjectNameFromPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	base := filepath.Base(cleaned)
 	if base == "." || base == string(filepath.Separator) {
-		return p
+		if volume := filepath.VolumeName(cleaned); volume != "" {
+			return volume
+		}
 	}
 	return base
 }
@@ -723,7 +768,7 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 	}
 	projectName = strings.TrimSpace(projectName)
 	if projectName == "" {
-		projectName = baseName(projectPath)
+		projectName = ProjectNameFromPath(projectPath)
 	}
 
 	title, err := requiredString(canonical, "title")
@@ -968,9 +1013,20 @@ func (s *Store) ListTasks(opts ListOptions) ([]Task, error) {
 	if limit == 0 {
 		limit = DefaultLimit
 	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
+	} else if offset > 0 {
+		// SQLite only accepts OFFSET together with LIMIT; -1 means "no limit".
+		query += ` LIMIT -1`
+	}
+	if offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, offset)
 	}
 
 	rows, err := db.Query(query, args...)
@@ -1288,19 +1344,55 @@ func (s *Store) DeleteTask(id string) (bool, error) {
 }
 
 // AppendNotes appends a line to a task's agent notes.
+//
+// The append happens in a single UPDATE statement. Reading the current notes
+// first and writing them back would let two concurrent appends overwrite each
+// other, so the database performs the concatenation itself.
+//
+// The task's updated_at is bumped, exactly as a regular update would, and
+// closed_at is left untouched: appending a note never changes the status.
+// Returns (nil, nil) when the task does not exist.
 func (s *Store) AppendNotes(id, note string) (*Task, error) {
-	task, err := s.GetTask(id)
+	db, err := s.conn()
 	if err != nil {
 		return nil, err
 	}
-	if task == nil {
+
+	ts := time.Now().UnixMilli()
+	res, err := db.Exec(`
+		UPDATE tasks
+		SET agent_notes = CASE
+				WHEN agent_notes IS NULL OR agent_notes = '' THEN ?
+				ELSE agent_notes || char(10) || ?
+			END,
+			updated_at = ?
+		WHERE id = ?`, note, note, ts, id)
+	if err != nil {
+		return nil, fmt.Errorf("append notes to task %q: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("append notes to task %q: %w", id, err)
+	}
+	if affected == 0 {
 		return nil, nil
 	}
-	notes := note
-	if task.AgentNotes != nil && *task.AgentNotes != "" {
-		notes = *task.AgentNotes + "\n" + note
+	return s.GetTask(id)
+}
+
+// Ping verifies that the database is open and that its schema can be read.
+// The HTTP health endpoint uses it so a service that cannot serve data is
+// never reported as healthy.
+func (s *Store) Ping() error {
+	db, err := s.conn()
+	if err != nil {
+		return err
 	}
-	return s.UpdateTask(id, map[string]any{"agent_notes": notes})
+	var id sql.NullString
+	if err := db.QueryRow(`SELECT id FROM tasks LIMIT 1`).Scan(&id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read database: %w", err)
+	}
+	return nil
 }
 
 // ------------------------------------------------------------- utilities --

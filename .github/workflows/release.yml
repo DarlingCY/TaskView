@@ -1,0 +1,101 @@
+name: Release
+
+# A release is published from a version tag only:
+#   v<major>.<minor>.<patch>
+# The tag becomes the version of the Windows installer and of the program.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# The workflow publishes a release and nothing else.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish the Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Make sure Inno Setup 6 is available
+        shell: pwsh
+        run: |
+          # The Windows runner image ships Inno Setup 6. Only when that is not
+          # the case any more, the build tool is installed for this job.
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+          $env:ISCC_PATH = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          "ISCC_PATH=$env:ISCC_PATH" >> $env:GITHUB_ENV
+
+      - name: Check the tag
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "The tag '${{ github.ref_name }}' is not a stable release version (expected vX.Y.Z)."
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build the application and the installer
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Version $env:VERSION
+
+      - name: Verify the published checksum
+        shell: pwsh
+        run: |
+          $installer = "dist/TaskView-Setup-$env:VERSION-windows-amd64.exe"
+          if (-not (Test-Path -LiteralPath $installer)) {
+            throw "The installer $installer was not produced."
+          }
+          $expected = ((Get-Content -LiteralPath 'dist/SHA256SUMS' -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $stream = [System.IO.File]::OpenRead($installer)
+            try {
+              $actual = ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+            }
+            finally {
+              $stream.Dispose()
+            }
+          }
+          finally {
+            $sha.Dispose()
+          }
+          if ($expected -ne $actual) {
+            throw "The checksum of $installer does not match dist/SHA256SUMS."
+          }
+          "SHA-256 $actual verified for $installer"
+
+      - name: Upload the build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskview-windows-${{ github.ref_name }}
+          path: |
+            dist/TaskView-Setup-${{ env.VERSION }}-windows-amd64.exe
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          # The token of this repository only. It is never printed.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "dist/TaskView-Setup-$env:VERSION-windows-amd64.exe" `
+            "dist/SHA256SUMS" `
+            --verify-tag `
+            --title "TaskView $env:VERSION" `
+            --generate-notes

@@ -15,6 +15,12 @@ import (
 
 func platformAutostartSupported() bool { return false }
 
+// platformAutostartDefinition is unreachable: autostart is rejected before a
+// definition is ever built.
+func platformAutostartDefinition(managed, dataDir string, enabled bool) (string, error) {
+	return "", ErrAutostartUnsupported
+}
+
 func platformBinaryName() (string, error) { return "taskview", nil }
 
 // platformPostCopy restricts the freshly written executable to the owner.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -175,43 +173,6 @@ func validateOrigin(origin string, reqHost, reqPort string) (bool, string) {
 	return true, ""
 }
 
-func readJSONBody(r *http.Request) (map[string]any, error) {
-	limited := io.LimitReader(r.Body, maxBodyBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, &ValidationError{Message: "Failed to read request body"}
-	}
-	if len(data) > maxBodyBytes {
-		return nil, &ValidationError{Message: "Request body too large"}
-	}
-
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 {
-		return map[string]any{}, nil
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.UseNumber()
-
-	var raw any
-	if err := dec.Decode(&raw); err != nil {
-		return nil, &ValidationError{Message: "Request body must be valid JSON"}
-	}
-
-	// Check for trailing garbage after first JSON token
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return nil, &ValidationError{Message: "Request body must be valid JSON"}
-	}
-
-	obj, ok := raw.(map[string]any)
-	if !ok || raw == nil {
-		return nil, &ValidationError{Message: "Request body must be a JSON object"}
-	}
-
-	return obj, nil
-}
-
 func parseBoolParam(value string) (bool, bool) {
 	v := strings.TrimSpace(strings.ToLower(value))
 	switch v {
@@ -222,49 +183,6 @@ func parseBoolParam(value string) (bool, bool) {
 	default:
 		return false, false
 	}
-}
-
-func normalizeAPIProjectPath(val string) string {
-	trimmed := strings.TrimSpace(val)
-	if trimmed == "" || trimmed == "all" {
-		return ""
-	}
-	abs, err := filepath.Abs(trimmed)
-	if err != nil {
-		return trimmed
-	}
-	return filepath.Clean(abs)
-}
-
-var writableTaskFields = map[string]bool{
-	"title":        true,
-	"description":  true,
-	"status":       true,
-	"priority":     true,
-	"file_path":    true,
-	"filePath":     true,
-	"line_start":   true,
-	"lineStart":    true,
-	"line_end":     true,
-	"lineEnd":      true,
-	"code_snippet": true,
-	"codeSnippet":  true,
-	"agent_notes":  true,
-	"agentNotes":   true,
-	"project_path": true,
-	"projectPath":  true,
-	"project_name": true,
-	"projectName":  true,
-}
-
-func pickWritable(body map[string]any) map[string]any {
-	out := make(map[string]any)
-	for k, v := range body {
-		if writableTaskFields[k] {
-			out[k] = v
-		}
-	}
-	return out
 }
 
 // OpenBrowser launches url in the default system browser without shell invocation.
@@ -407,184 +325,36 @@ func CreateApp(store *Store, staticFS fs.FS) http.Handler {
 			if store != nil {
 				dbPath = store.FilePath
 			}
-			sendJSON(w, http.StatusOK, map[string]any{"success": true, "db": dbPath})
+			payload := map[string]any{
+				"success": true,
+				"version": appVersion(),
+				"db":      dbPath,
+			}
+			// A health check that never touches the database would report a
+			// healthy service that cannot serve a single task.
+			if store == nil {
+				payload["success"] = false
+				payload["error"] = "database is not available"
+				sendJSON(w, http.StatusServiceUnavailable, payload)
+				return
+			}
+			if err := store.Ping(); err != nil {
+				payload["success"] = false
+				payload["error"] = "database is not readable: " + err.Error()
+				sendJSON(w, http.StatusServiceUnavailable, payload)
+				return
+			}
+			sendJSON(w, http.StatusOK, payload)
 			return
 		}
 
-		if cleanPath == "/api/projects" {
-			if r.Method != http.MethodGet {
-				w.Header().Set("Allow", "GET")
-				sendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
-				return
-			}
-			projects, err := store.GetProjects()
-			if err != nil {
-				sendError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			if projects == nil {
-				projects = []Project{}
-			}
-			sendJSON(w, http.StatusOK, projects)
+		if strings.HasPrefix(cleanPath, "/api/agent/") || cleanPath == "/api/agent" {
+			handleAgentAPI(store, w, r, cleanPath)
 			return
 		}
 
-		if cleanPath == "/api/stats" {
-			if r.Method != http.MethodGet {
-				w.Header().Set("Allow", "GET")
-				sendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
-				return
-			}
-			q := parsedURL.Query()
-			scope := q.Get("project_path")
-			if scope == "" {
-				scope = q.Get("projectPath")
-			}
-			stats, err := store.GetStats(scope)
-			if err != nil {
-				sendError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			sendJSON(w, http.StatusOK, stats)
-			return
-		}
-
-		if cleanPath == "/api/tasks" {
-			if r.Method == http.MethodGet {
-				q := parsedURL.Query()
-				allBool := false
-				if b, ok := parseBoolParam(q.Get("all")); ok && b {
-					allBool = true
-				}
-				search := q.Get("search")
-				if search == "" {
-					search = q.Get("q")
-				}
-				projParam := q.Get("project_path")
-				if projParam == "" {
-					projParam = q.Get("projectPath")
-				}
-				opts := ListOptions{
-					ProjectPath: normalizeAPIProjectPath(projParam),
-					Status:      q.Get("status"),
-					Priority:    q.Get("priority"),
-					Search:      search,
-					Sort:        q.Get("sort"),
-					All:         allBool,
-				}
-				tasks, err := store.ListTasks(opts)
-				if err != nil {
-					if IsValidationError(err) {
-						sendError(w, http.StatusBadRequest, err.Error())
-						return
-					}
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if tasks == nil {
-					tasks = []Task{}
-				}
-				sendJSON(w, http.StatusOK, tasks)
-				return
-			}
-
-			if r.Method == http.MethodPost || r.Method == http.MethodPut {
-				body, err := readJSONBody(r)
-				if err != nil {
-					sendError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-				task, err := store.CreateTask(body)
-				if err != nil {
-					if IsValidationError(err) {
-						sendError(w, http.StatusBadRequest, err.Error())
-						return
-					}
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				sendJSON(w, http.StatusCreated, task)
-				return
-			}
-
-			w.Header().Set("Allow", "GET, POST, PUT")
-			sendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
-			return
-		}
-
-		if strings.HasPrefix(cleanPath, "/api/tasks/") {
-			idPart := strings.TrimPrefix(cleanPath, "/api/tasks/")
-			id, unescapeErr := url.PathUnescape(idPart)
-			if unescapeErr != nil || id == "" || strings.Contains(id, "/") {
-				sendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", idPart))
-				return
-			}
-
-			if r.Method == http.MethodGet {
-				task, err := store.GetTask(id)
-				if err != nil {
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if task == nil {
-					sendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", id))
-					return
-				}
-				sendJSON(w, http.StatusOK, task)
-				return
-			}
-
-			if r.Method == http.MethodPatch || r.Method == http.MethodPut {
-				body, err := readJSONBody(r)
-				if err != nil {
-					sendError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-				fields := pickWritable(body)
-				if len(fields) == 0 {
-					sendError(w, http.StatusBadRequest, "No valid fields provided to update")
-					return
-				}
-
-				existing, err := store.GetTask(id)
-				if err != nil {
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if existing == nil {
-					sendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", id))
-					return
-				}
-
-				updated, err := store.UpdateTask(id, fields)
-				if err != nil {
-					if IsValidationError(err) {
-						sendError(w, http.StatusBadRequest, err.Error())
-						return
-					}
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				sendJSON(w, http.StatusOK, updated)
-				return
-			}
-
-			if r.Method == http.MethodDelete {
-				deleted, err := store.DeleteTask(id)
-				if err != nil {
-					sendError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				if !deleted {
-					sendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", id))
-					return
-				}
-				sendJSON(w, http.StatusOK, map[string]any{"success": true, "id": id})
-				return
-			}
-
-			w.Header().Set("Allow", "GET, PATCH, PUT, DELETE")
-			sendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
+		if strings.HasPrefix(cleanPath, "/api/board/") || cleanPath == "/api/board" {
+			handleBoardAPI(store, w, r, cleanPath)
 			return
 		}
 

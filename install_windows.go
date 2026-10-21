@@ -43,6 +43,18 @@ const taskRunDuration = "PT0S"
 // taskRunTimeout bounds register/remove so a wedged COM call cannot hang install.
 const taskRunTimeout = 15 * time.Second
 
+// platformAutostartDefinition renders the logon task for this installation
+// without registering it.
+//
+// It is used to carry an explicitly disabled registration over to a new
+// executable: the registration must keep pointing at the program that is now
+// installed, and it must stay disabled.
+func platformAutostartDefinition(managed, dataDir string, enabled bool) (string, error) {
+	return taskXMLFor(managed, dataDir, scheduledTaskName(dataDir), enabled)
+}
+
+// platformAutostartSupported reports whether this platform can register a
+// login item.
 func platformAutostartSupported() bool { return true }
 
 func platformBinaryName() (string, error) { return windowsBinaryName, nil }
@@ -101,11 +113,7 @@ func scheduledTaskCommand(managed, dataDir string) []string {
 	if err != nil {
 		absDir = dataDir
 	}
-	return []string{
-		"server", "start",
-		"--port", strconv.Itoa(taskServerPort),
-		"--data-dir", filepath.Clean(absDir),
-	}
+	return []string{"--background", "--data-dir", filepath.Clean(absDir)}
 }
 
 // composeTaskArguments renders the Exec action's <Arguments>.
@@ -117,9 +125,19 @@ func composeTaskArguments(args []string) string {
 	return windows.ComposeCommandLine(args)
 }
 
-// taskXML builds the task definition. Task Scheduler XML is embedded in a
-// command, so every interpolated value is XML-escaped.
+// taskXML builds an enabled task definition.
 func taskXML(managed, dataDir, taskName string) (string, error) {
+	return taskXMLFor(managed, dataDir, taskName, true)
+}
+
+// taskXMLFor builds the task definition. Task Scheduler XML is embedded in a
+// command, so every interpolated value is XML-escaped. A disabled definition
+// keeps a registration visible in the scheduler without starting anything.
+func taskXMLFor(managed, dataDir, taskName string, enabled bool) (string, error) {
+	enabledText := "true"
+	if !enabled {
+		enabledText = "false"
+	}
 	_, name := currentUserIdentity()
 	if name == "" {
 		name = escapeXML(taskName)
@@ -141,7 +159,7 @@ func taskXML(managed, dataDir, taskName string) (string, error) {
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
-      <Enabled>true</Enabled>
+      <Enabled>%s</Enabled>
       <UserId>%s</UserId>
       <Delay>PT10S</Delay>
     </LogonTrigger>
@@ -165,7 +183,7 @@ func taskXML(managed, dataDir, taskName string) (string, error) {
       <RestartOnIdle>false</RestartOnIdle>
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
+    <Enabled>%s</Enabled>
     <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
@@ -182,8 +200,10 @@ func taskXML(managed, dataDir, taskName string) (string, error) {
 </Task>
 `,
 		escapeXML(taskName),
+		enabledText,
 		escapeXML(name),
 		escapeXML(name),
+		enabledText,
 		taskRunDuration,
 		escapeXML(managed),
 		escapeXML(composeTaskArguments(scheduledTaskCommand(managed, dataDir))),
@@ -402,7 +422,8 @@ func platformRemoveAutostart(dataDir string) error {
 // standard users by local policy; TaskView never elevates itself.
 func autostartRegistrationError(err error, taskName string) error {
 	return fmt.Errorf("could not register the TaskView logon task %s: %w\n"+
-		"retry taskview install --autostart in authorized terminal or use install without --autostart; no automatic elevation",
+		"open TaskView from the Start menu and turn the autostart switch on again; "+
+		"no automatic elevation",
 		taskName, err)
 }
 

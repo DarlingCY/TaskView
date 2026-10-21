@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -26,12 +27,14 @@ import (
 
 // ServerState represents the on-disk state of a managed background server.
 type ServerState struct {
-	PID       int    `json:"pid"`
-	URL       string `json:"url"`
-	DB        string `json:"db"`
-	Token     string `json:"token"`
-	Instance  string `json:"instance"`
-	StartedAt int64  `json:"started_at"`
+	PID        int    `json:"pid"`
+	URL        string `json:"url"`
+	DB         string `json:"db"`
+	Token      string `json:"token"`
+	Instance   string `json:"instance"`
+	StartedAt  int64  `json:"started_at"`
+	Version    string `json:"version,omitempty"`
+	Executable string `json:"executable,omitempty"`
 }
 
 // ValidatePort validates that port is in the valid TCP range [0, 65535].
@@ -47,7 +50,7 @@ func defaultDaemonCmdBuilder(port int, absDataDir string) (string, []string, err
 	if err != nil {
 		return "", nil, fmt.Errorf("locate current executable: %w", err)
 	}
-	return exe, []string{"server", "run", "--port", strconv.Itoa(port), "--data-dir", absDataDir}, nil
+	return exe, []string{"--internal-run", "--port", strconv.Itoa(port), "--data-dir", absDataDir}, nil
 }
 
 var daemonCmdBuilder = func(port int, absDataDir string) (string, []string, error) {
@@ -275,6 +278,8 @@ func wrapControlHandler(base http.Handler, holder *managedStateHolder, stopCh ch
 					"db":         snap.DB,
 					"url":        snap.URL,
 					"started_at": snap.StartedAt,
+					"version":    snap.Version,
+					"executable": snap.Executable,
 				})
 				return
 			}
@@ -343,12 +348,14 @@ func checkManagedHealth(state *ServerState, expectedDB string) (bool, *ServerSta
 	}
 
 	var payload struct {
-		Success   bool   `json:"success"`
-		PID       int    `json:"pid"`
-		Instance  string `json:"instance"`
-		DB        string `json:"db"`
-		URL       string `json:"url"`
-		StartedAt int64  `json:"started_at"`
+		Success    bool   `json:"success"`
+		PID        int    `json:"pid"`
+		Instance   string `json:"instance"`
+		DB         string `json:"db"`
+		URL        string `json:"url"`
+		StartedAt  int64  `json:"started_at"`
+		Version    string `json:"version,omitempty"`
+		Executable string `json:"executable,omitempty"`
 	}
 	limited := io.LimitReader(resp.Body, 64*1024)
 	if err := json.NewDecoder(limited).Decode(&payload); err != nil {
@@ -363,12 +370,14 @@ func checkManagedHealth(state *ServerState, expectedDB string) (bool, *ServerSta
 	}
 
 	matchedState := &ServerState{
-		PID:       payload.PID,
-		URL:       expectedBaseURL,
-		DB:        expectedDB,
-		Token:     state.Token,
-		Instance:  payload.Instance,
-		StartedAt: payload.StartedAt,
+		PID:        payload.PID,
+		URL:        expectedBaseURL,
+		DB:         expectedDB,
+		Token:      state.Token,
+		Instance:   payload.Instance,
+		StartedAt:  payload.StartedAt,
+		Version:    payload.Version,
+		Executable: payload.Executable,
 	}
 	return true, matchedState, nil
 }
@@ -680,8 +689,17 @@ func EnsureBackgroundServer(port int) (*ServerState, error) {
 	return nil, fmt.Errorf("server failed to start within 10s; check logs at %s", logFilePath)
 }
 
-// RunManagedServer runs the foreground internal managed server for "server run".
+// trayReadyTimeout bounds how long startup waits for the notification area
+// icon. It is a portable constant because the tray backends keep their own
+// platform specific timeouts.
+const trayReadyTimeout = 5 * time.Second
+
+// RunManagedServer is the headless lifecycle used by isolated service tests.
 func RunManagedServer(port int) error {
+	return runManagedServer(port, nil)
+}
+
+func runManagedServer(port int, tray func(context.Context, trayOptions) error) error {
 	if err := ValidatePort(port); err != nil {
 		return err
 	}
@@ -745,14 +763,20 @@ func RunManagedServer(port int) error {
 	}
 	defer store.Close()
 
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate application: %w", err)
+	}
 	holder := &managedStateHolder{
 		state: ServerState{
-			PID:       os.Getpid(),
-			URL:       "",
-			DB:        store.FilePath,
-			Token:     token,
-			Instance:  instance,
-			StartedAt: now,
+			PID:        os.Getpid(),
+			URL:        "",
+			DB:         store.FilePath,
+			Token:      token,
+			Instance:   instance,
+			StartedAt:  now,
+			Version:    appVersion(),
+			Executable: executable,
 		},
 	}
 
@@ -772,6 +796,49 @@ func RunManagedServer(port int) error {
 	defer running.Close()
 
 	holder.setURL(running.URL)
+
+	// The tray is started before the state is published: a health check must
+	// only succeed for an instance whose notification area icon really exists,
+	// otherwise the installer would accept a half-started application that the
+	// user cannot reach.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	trayReady := make(chan struct{})
+	var trayReadyOnce sync.Once
+	markTrayReady := func() { trayReadyOnce.Do(func() { close(trayReady) }) }
+	var trayDone chan error
+	if tray != nil {
+		trayDone = make(chan error, 1)
+		go func() {
+			trayDone <- tray(ctx, trayOptions{
+				URL: running.URL, DataDir: absDataDir, Context: ctx,
+				Ready: markTrayReady,
+				RequestExit: func() {
+					select {
+					case stopCh <- struct{}{}:
+					default:
+					}
+				},
+				CheckUpdate: checkForApplicationUpdate,
+			})
+		}()
+		select {
+		case <-trayReady:
+		case err := <-trayDone:
+			if err != nil {
+				return fmt.Errorf("system tray: %w", err)
+			}
+			return errors.New("system tray stopped before it became ready")
+		case <-time.After(trayReadyTimeout):
+			cancel()
+			select {
+			case <-trayDone:
+			case <-time.After(2 * time.Second):
+			}
+			return errors.New("the TaskView tray icon did not start; close the other session or restart Windows Explorer")
+		}
+	}
+
 	publishedState := holder.snapshot()
 
 	if err := writeServerStateAtomic(absDataDir, &publishedState); err != nil {
@@ -779,6 +846,10 @@ func RunManagedServer(port int) error {
 		return fmt.Errorf("write server state: %w", err)
 	}
 	defer removeServerStateIfMatching(absDataDir, instance)
+	if err := writeEndpoint(absDataDir, &publishedState); err != nil {
+		return err
+	}
+	defer removeEndpoint(absDataDir, instance)
 
 	logger.Printf("managed server listening at %s pid=%d instance=%s db=%s", running.URL, publishedState.PID, publishedState.Instance, publishedState.DB)
 
@@ -791,6 +862,22 @@ func RunManagedServer(port int) error {
 		logger.Printf("received signal %v, shutting down...", sig)
 	case <-stopCh:
 		logger.Printf("received control stop request, shutting down...")
+	case err := <-trayDone:
+		if err != nil {
+			return fmt.Errorf("system tray: %w", err)
+		}
+		trayDone = nil
+	}
+	cancel()
+	if trayDone != nil {
+		select {
+		case err := <-trayDone:
+			if err != nil {
+				logger.Printf("tray shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			logger.Printf("tray shutdown timed out")
+		}
 	}
 
 	logger.Printf("server stopped cleanly")

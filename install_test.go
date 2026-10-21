@@ -607,10 +607,14 @@ func TestAutostartFailureReportsButKeepsBinary(t *testing.T) {
 	if manifest.Autostart {
 		t.Error("manifest must not record autostart after a failed registration")
 	}
-	// The message must be actionable and must not imply elevation.
+	// The message must be actionable, must point at the tray switch rather than
+	// a removed command line, and must not imply elevation.
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "elevated") && !strings.Contains(msg, "without --autostart") {
+	if !strings.Contains(msg, "start menu") && !strings.Contains(msg, "elevated") {
 		t.Errorf("error should explain how to proceed: %v", err)
+	}
+	if strings.Contains(msg, "--autostart") {
+		t.Errorf("error must not suggest a command line flag: %v", err)
 	}
 }
 

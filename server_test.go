@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,7 +192,7 @@ func TestSecurityAndHostOrigin(t *testing.T) {
 	}
 
 	t.Run("OPTIONS preflight returns 204 for same-origin", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodOptions, "http://127.0.0.1:3333/api/tasks", nil)
+		req := httptest.NewRequest(http.MethodOptions, "http://127.0.0.1:3333/api/board/tasks", nil)
 		req.Host = "127.0.0.1:3333"
 		req.Header.Set("Origin", "http://127.0.0.1:3333")
 		rec := httptest.NewRecorder()
@@ -210,14 +211,14 @@ func TestAPIEndpoints(t *testing.T) {
 	store := newTestServerStore(t)
 	handler := CreateApp(store, testStaticFS())
 
-	t.Run("GET /api and /api/health", func(t *testing.T) {
-		for _, endpoint := range []string{"/api", "/api/health"} {
+	t.Run("GET /api and /api/health and /api/agent/health", func(t *testing.T) {
+		for _, endpoint := range []string{"/api", "/api/health", "/api/agent/health"} {
 			req := testReq(http.MethodGet, endpoint, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", rec.Code)
+				t.Fatalf("%s: expected 200, got %d", endpoint, rec.Code)
 			}
 			var res map[string]any
 			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
@@ -226,11 +227,14 @@ func TestAPIEndpoints(t *testing.T) {
 			if res["success"] != true || res["db"] != store.FilePath {
 				t.Fatalf("unexpected response: %v", res)
 			}
+			if res["version"] != appVersion() {
+				t.Fatalf("version = %v, want %q", res["version"], appVersion())
+			}
 		}
 	})
 
-	t.Run("GET /api/projects returns [] on empty store", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/projects", nil)
+	t.Run("GET /api/board/projects returns [] on empty store", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/projects", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -242,8 +246,8 @@ func TestAPIEndpoints(t *testing.T) {
 		}
 	})
 
-	t.Run("GET /api/stats", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/stats", nil)
+	t.Run("GET /api/board/stats", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/stats", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -272,14 +276,17 @@ func TestAPIEndpoints(t *testing.T) {
 	})
 }
 
-func TestTasksCRUD(t *testing.T) {
+func TestBoardTasksCRUD(t *testing.T) {
 	store := newTestServerStore(t)
 	handler := CreateApp(store, testStaticFS())
 
+	// The project has to be named explicitly: the server's working directory
+	// is the install directory, never the user's project.
+	projectPath := filepath.Join(t.TempDir(), "my-app")
 	var createdID string
 
-	t.Run("GET /api/tasks returns [] on empty store", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks", nil)
+	t.Run("GET /api/board/tasks returns [] on empty store", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?all=true", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -291,9 +298,19 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("POST /api/tasks creates task", func(t *testing.T) {
-		body := `{"title":"HTTP Test Task","priority":"high","status":"todo"}`
-		req := testReq(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	t.Run("GET /api/board/tasks without a scope is rejected", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("POST /api/board/tasks creates task", func(t *testing.T) {
+		body := fmt.Sprintf(`{"title":"HTTP Test Task","priority":"high","status":"todo","project_path":%q}`, projectPath)
+		req := testReq(http.MethodPost, "/api/board/tasks", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -312,6 +329,12 @@ func TestTasksCRUD(t *testing.T) {
 		if task["projectPath"] == nil || task["createdAt"] == nil {
 			t.Fatalf("missing camelCase aliases in json: %v", task)
 		}
+		if task["project_path"] != projectPath {
+			t.Fatalf("project_path = %v, want %q", task["project_path"], projectPath)
+		}
+		if task["project_name"] != "my-app" {
+			t.Fatalf("project_name = %v, want the last directory of the path", task["project_name"])
+		}
 
 		id, ok := task["id"].(string)
 		if !ok || id == "" {
@@ -320,9 +343,9 @@ func TestTasksCRUD(t *testing.T) {
 		createdID = id
 	})
 
-	t.Run("PUT /api/tasks creates task (compatibility)", func(t *testing.T) {
-		body := `{"title":"PUT Created Task"}`
-		req := testReq(http.MethodPut, "/api/tasks", strings.NewReader(body))
+	t.Run("PUT /api/board/tasks creates task (compatibility)", func(t *testing.T) {
+		body := fmt.Sprintf(`{"title":"PUT Created Task","project_path":%q}`, projectPath)
+		req := testReq(http.MethodPut, "/api/board/tasks", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -331,8 +354,8 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("GET /api/tasks/:id retrieves task", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks/"+createdID, nil)
+	t.Run("GET /api/board/tasks/:id retrieves task", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks/"+createdID, nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -348,8 +371,8 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("GET /api/tasks/unknown returns 404", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks/task_does_not_exist", nil)
+	t.Run("GET /api/board/tasks/unknown returns 404", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks/task_does_not_exist", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -358,9 +381,9 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("PATCH /api/tasks/:id updates task", func(t *testing.T) {
+	t.Run("PATCH /api/board/tasks/:id updates task", func(t *testing.T) {
 		body := `{"status":"in_progress","agentNotes":"working on api test"}`
-		req := testReq(http.MethodPatch, "/api/tasks/"+createdID, strings.NewReader(body))
+		req := testReq(http.MethodPatch, "/api/board/tasks/"+createdID, strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -376,8 +399,8 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("PATCH /api/tasks/:id SPA full edit payload clearing nullable fields", func(t *testing.T) {
-		body := `{
+	t.Run("PATCH /api/board/tasks/:id SPA full edit payload clearing nullable fields", func(t *testing.T) {
+		body := fmt.Sprintf(`{
 			"title": "SPA Cleared Task",
 			"description": null,
 			"filePath": null,
@@ -385,10 +408,10 @@ func TestTasksCRUD(t *testing.T) {
 			"lineEnd": null,
 			"codeSnippet": null,
 			"agentNotes": null,
-			"projectPath": "C:\\Workspace\\TaskView",
-			"projectName": "TaskView"
-		}`
-		req := testReq(http.MethodPatch, "/api/tasks/"+createdID, strings.NewReader(body))
+			"projectPath": %q,
+			"projectName": "my-app"
+		}`, projectPath)
+		req := testReq(http.MethodPatch, "/api/board/tasks/"+createdID, strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -412,9 +435,9 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("PATCH /api/tasks/:id with no valid fields returns 400", func(t *testing.T) {
+	t.Run("PATCH /api/board/tasks/:id with no valid fields returns 400", func(t *testing.T) {
 		body := `{"unrecognizedField":"abc"}`
-		req := testReq(http.MethodPatch, "/api/tasks/"+createdID, strings.NewReader(body))
+		req := testReq(http.MethodPatch, "/api/board/tasks/"+createdID, strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -423,8 +446,8 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("DELETE /api/tasks/:id deletes task", func(t *testing.T) {
-		req := testReq(http.MethodDelete, "/api/tasks/"+createdID, nil)
+	t.Run("DELETE /api/board/tasks/:id deletes task", func(t *testing.T) {
+		req := testReq(http.MethodDelete, "/api/board/tasks/"+createdID, nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -440,7 +463,7 @@ func TestTasksCRUD(t *testing.T) {
 		}
 
 		// Subsequent GET returns 404
-		reqGet := testReq(http.MethodGet, "/api/tasks/"+createdID, nil)
+		reqGet := testReq(http.MethodGet, "/api/board/tasks/"+createdID, nil)
 		recGet := httptest.NewRecorder()
 		handler.ServeHTTP(recGet, reqGet)
 		if recGet.Code != http.StatusNotFound {
@@ -449,7 +472,7 @@ func TestTasksCRUD(t *testing.T) {
 	})
 
 	t.Run("DELETE nonexistent task returns 404", func(t *testing.T) {
-		req := testReq(http.MethodDelete, "/api/tasks/task_already_deleted", nil)
+		req := testReq(http.MethodDelete, "/api/board/tasks/task_already_deleted", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -458,8 +481,8 @@ func TestTasksCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("unsupported method on /api/tasks/:id returns 405", func(t *testing.T) {
-		req := testReq(http.MethodPost, "/api/tasks/task_123", nil)
+	t.Run("unsupported method on /api/board/tasks/:id returns 405", func(t *testing.T) {
+		req := testReq(http.MethodPost, "/api/board/tasks/task_123", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -472,17 +495,149 @@ func TestTasksCRUD(t *testing.T) {
 	})
 }
 
+func TestAgentTasksCRUD(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+	var createdID string
+
+	t.Run("GET /api/agent/tasks returns [] on empty store", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks?all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		if strings.TrimSpace(rec.Body.String()) != "[]" {
+			t.Fatalf("expected exact '[]', got: %q", rec.Body.String())
+		}
+	})
+
+	t.Run("POST /api/agent/tasks creates task", func(t *testing.T) {
+		body := fmt.Sprintf(`{"title":"Agent Test Task","priority":"high","status":"todo","project_path":%q}`, projectPath)
+		req := testReq(http.MethodPost, "/api/agent/tasks", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var task map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if task["title"] != "Agent Test Task" || task["priority"] != "high" {
+			t.Fatalf("task fields mismatch: %v", task)
+		}
+		createdID = task["id"].(string)
+	})
+
+	t.Run("GET /api/agent/tasks/:id retrieves task", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks/"+createdID, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+	})
+
+	t.Run("PATCH /api/agent/tasks/:id updates task", func(t *testing.T) {
+		body := `{"status":"in_progress"}`
+		req := testReq(http.MethodPatch, "/api/agent/tasks/"+createdID, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+	})
+
+	t.Run("POST /api/agent/tasks/:id/notes appends note", func(t *testing.T) {
+		body := `{"note":"first note"}`
+		req := testReq(http.MethodPost, "/api/agent/tasks/"+createdID+"/notes", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var task map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatalf("failed to parse: %v", err)
+		}
+		if task["agent_notes"] != "first note" {
+			t.Fatalf("agent_notes = %v, want 'first note'", task["agent_notes"])
+		}
+	})
+
+	t.Run("DELETE on /api/agent/tasks/:id returns 405", func(t *testing.T) {
+		req := testReq(http.MethodDelete, "/api/agent/tasks/"+createdID, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405 on Agent DELETE, got %d", rec.Code)
+		}
+	})
+}
+
+func TestAPIIsolation(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+
+	task, err := store.CreateTask(map[string]any{"title": "Iso Task", "project_path": projectPath})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	t.Run("Agent cannot access projects", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/projects", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Agent cannot access stats", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/stats", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Board cannot access notes endpoint", func(t *testing.T) {
+		req := testReq(http.MethodPost, "/api/board/tasks/"+task.ID+"/notes", strings.NewReader(`{"note":"test"}`))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 on board /notes, got %d", rec.Code)
+		}
+	})
+}
+
 func TestMalformedAndValidation(t *testing.T) {
 	store := newTestServerStore(t)
 	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
 
 	cases := []struct {
 		name string
 		body string
 	}{
-		{"invalid status", `{"title":"bad status","status":"invalid"}`},
-		{"invalid priority", `{"title":"bad priority","priority":"super"}`},
-		{"invalid line range", `{"title":"bad lines","line_start":50,"line_end":20}`},
+		{"invalid status", fmt.Sprintf(`{"title":"bad status","status":"invalid","project_path":%q}`, projectPath)},
+		{"invalid priority", fmt.Sprintf(`{"title":"bad priority","priority":"super","project_path":%q}`, projectPath)},
+		{"invalid line range", fmt.Sprintf(`{"title":"bad lines","line_start":50,"line_end":20,"project_path":%q}`, projectPath)},
 		{"malformed JSON", `{"title": not valid json`},
 		{"JSON array instead of object", `[{"title":"array"}]`},
 		{"JSON string instead of object", `"just a string"`},
@@ -491,28 +646,30 @@ func TestMalformedAndValidation(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := testReq(http.MethodPost, "/api/tasks", strings.NewReader(tc.body))
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+		for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+			t.Run(tc.name+" "+prefix, func(t *testing.T) {
+				req := testReq(http.MethodPost, prefix, strings.NewReader(tc.body))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("%s: expected 400, got %d: %s", tc.name, rec.Code, rec.Body.String())
-			}
-			var res map[string]any
-			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-				t.Fatalf("failed to parse json: %v", err)
-			}
-			if res["success"] != false || res["error"] == nil {
-				t.Fatalf("expected error object, got %v", res)
-			}
-		})
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s (%s): expected 400, got %d: %s", tc.name, prefix, rec.Code, rec.Body.String())
+				}
+				var res map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+					t.Fatalf("failed to parse json: %v", err)
+				}
+				if res["success"] != false || res["error"] == nil {
+					t.Fatalf("expected error object, got %v", res)
+				}
+			})
+		}
 	}
 
 	t.Run("body exceeding 5MB rejected", func(t *testing.T) {
 		huge := strings.Repeat("A", 5*1024*1024+10)
 		body := fmt.Sprintf(`{"title":"huge","description":"%s"}`, huge)
-		req := testReq(http.MethodPost, "/api/tasks", strings.NewReader(body))
+		req := testReq(http.MethodPost, "/api/agent/tasks", strings.NewReader(body))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -539,44 +696,46 @@ func TestFiltersAndSearch(t *testing.T) {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
-	t.Run("filter by all=true", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks?all=true", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
+	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+		t.Run("filter by all=true "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?all=true", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", rec.Code)
-		}
-		var tasks []map[string]any
-		json.Unmarshal(rec.Body.Bytes(), &tasks)
-		if len(tasks) != 3 {
-			t.Fatalf("expected 3 tasks, got %d", len(tasks))
-		}
-	})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			var tasks []map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+			if len(tasks) != 3 {
+				t.Fatalf("expected 3 tasks, got %d", len(tasks))
+			}
+		})
 
-	t.Run("filter by status", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks?status=in_progress&all=true", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
+		t.Run("filter by status "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?status=in_progress&all=true", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-		var tasks []map[string]any
-		json.Unmarshal(rec.Body.Bytes(), &tasks)
-		if len(tasks) != 1 || tasks[0]["title"] != "Search Beta" {
-			t.Fatalf("unexpected filtered tasks: %v", tasks)
-		}
-	})
+			var tasks []map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+			if len(tasks) != 1 || tasks[0]["title"] != "Search Beta" {
+				t.Fatalf("unexpected filtered tasks: %v", tasks)
+			}
+		})
 
-	t.Run("filter by search query", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/tasks?q=Gamma&all=true", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
+		t.Run("filter by search query "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?q=Gamma&all=true", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-		var tasks []map[string]any
-		json.Unmarshal(rec.Body.Bytes(), &tasks)
-		if len(tasks) != 1 || tasks[0]["title"] != "Search Gamma" {
-			t.Fatalf("unexpected search results: %v", tasks)
-		}
-	})
+			var tasks []map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+			if len(tasks) != 1 || tasks[0]["title"] != "Search Gamma" {
+				t.Fatalf("unexpected search results: %v", tasks)
+			}
+		})
+	}
 }
 
 func TestStartServerPortFallback(t *testing.T) {
@@ -660,4 +819,280 @@ func TestStartServerValidation(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestHealthReportsAnUnreadableDatabase makes sure the health check does not
+// lie: a service that cannot read its database is not healthy.
+func TestHealthReportsAnUnreadableDatabase(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	req := testReq(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse json: %v", err)
+	}
+	if res["success"] != false || res["error"] == nil {
+		t.Fatalf("expected a failed health report, got %v", res)
+	}
+}
+
+// TestCreateTaskRequiresAnAbsoluteProjectPath covers the creation contract:
+// the project is named explicitly, and the display name is derived from it.
+func TestCreateTaskRequiresAnAbsoluteProjectPath(t *testing.T) {
+	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+		prefix := prefix
+		t.Run(prefix, func(t *testing.T) {
+			store := newTestServerStore(t)
+			handler := CreateApp(store, testStaticFS())
+			projectPath := filepath.Join(t.TempDir(), "my-app")
+
+			t.Run("missing project path rejected", func(t *testing.T) {
+				req := testReq(http.MethodPost, prefix, strings.NewReader(`{"title":"no project"}`))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+
+			t.Run("relative project path rejected", func(t *testing.T) {
+				req := testReq(http.MethodPost, prefix, strings.NewReader(`{"title":"relative","project_path":"some/relative/path"}`))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+
+			t.Run("camelCase project path accepted", func(t *testing.T) {
+				body := fmt.Sprintf(`{"title":"camel","projectPath":%q}`, projectPath)
+				req := testReq(http.MethodPost, prefix, strings.NewReader(body))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+				}
+				var task map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+				if task["project_path"] != projectPath {
+					t.Fatalf("project_path = %v, want %q", task["project_path"], projectPath)
+				}
+			})
+
+			t.Run("project name derived from the path", func(t *testing.T) {
+				body := fmt.Sprintf(`{"title":"derived","project_path":%q,"project_name":"Custom Name"}`, projectPath)
+				req := testReq(http.MethodPost, prefix, strings.NewReader(body))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+				}
+				var task map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+				if task["project_name"] != "my-app" {
+					t.Fatalf("project_name = %v, want my-app - the name comes from the path", task["project_name"])
+				}
+			})
+		})
+	}
+}
+
+// TestTaskListingRequiresAnExplicitScope covers the listing contract: without
+// all=true the project has to be named, and it has to be absolute.
+func TestTaskListingRequiresAnExplicitScope(t *testing.T) {
+	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+		prefix := prefix
+		t.Run(prefix, func(t *testing.T) {
+			store := newTestServerStore(t)
+			handler := CreateApp(store, testStaticFS())
+			projectPath := filepath.Join(t.TempDir(), "my-app")
+
+			t.Run("no scope rejected", func(t *testing.T) {
+				req := testReq(http.MethodGet, prefix, nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+
+			t.Run("relative scope rejected", func(t *testing.T) {
+				req := testReq(http.MethodGet, prefix+"?project_path=relative/path", nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+
+			t.Run("absolute scope accepted", func(t *testing.T) {
+				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath), nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+				}
+				var tasks []map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+					t.Fatalf("failed to parse tasks: %v", err)
+				}
+				if len(tasks) != 0 {
+					t.Fatalf("expected no tasks, got %d", len(tasks))
+				}
+			})
+
+			t.Run("all=true lists every project", func(t *testing.T) {
+				req := testReq(http.MethodGet, prefix+"?all=true", nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+		})
+	}
+}
+
+// TestTaskListingPaging checks the bounded page size and the offset.
+func TestTaskListingPaging(t *testing.T) {
+	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+		prefix := prefix
+		t.Run(prefix, func(t *testing.T) {
+			store := newTestServerStore(t)
+			handler := CreateApp(store, testStaticFS())
+			projectPath := filepath.Join(t.TempDir(), "my-app")
+
+			for i := 0; i < 5; i++ {
+				if _, err := store.CreateTask(map[string]any{
+					"title":        fmt.Sprintf("task %d", i),
+					"project_path": projectPath,
+				}); err != nil {
+					t.Fatalf("CreateTask: %v", err)
+				}
+			}
+
+			page := func(query string) []map[string]any {
+				t.Helper()
+				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+query, nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+				}
+				var tasks []map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+					t.Fatalf("failed to parse tasks: %v", err)
+				}
+				return tasks
+			}
+
+			if got := page("&limit=2"); len(got) != 2 {
+				t.Errorf("limit=2 returned %d tasks, want 2", len(got))
+			}
+			if got := page("&limit=2&offset=2"); len(got) != 2 {
+				t.Errorf("limit=2&offset=2 returned %d tasks, want 2", len(got))
+			}
+			if got := page("&limit=2&offset=4"); len(got) != 1 {
+				t.Errorf("limit=2&offset=4 returned %d tasks, want 1", len(got))
+			}
+			if got := page("&limit=2&offset=99"); len(got) != 0 {
+				t.Errorf("offset past the end returned %d tasks, want 0", len(got))
+			}
+
+			for _, bad := range []string{"&limit=0", "&limit=501", "&limit=abc", "&offset=-1", "&offset=abc"} {
+				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+bad, nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Errorf("%s: expected 400, got %d", bad, rec.Code)
+				}
+			}
+		})
+	}
+}
+
+// TestAppendNotesEndpoint covers the note endpoint: a non-empty note is
+// appended to the task, and everything else is refused.
+func TestAppendNotesEndpoint(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+
+	task, err := store.CreateTask(map[string]any{"title": "Notes", "project_path": projectPath})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	appendNote := func(id, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := testReq(http.MethodPost, "/api/agent/tasks/"+id+"/notes", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := appendNote(task.ID, `{"note":"first"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("failed to parse task: %v", err)
+	}
+	if updated["agent_notes"] != "first" {
+		t.Fatalf("agent_notes = %v, want first", updated["agent_notes"])
+	}
+
+	rec = appendNote(task.ID, `{"note":"second"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("failed to parse task: %v", err)
+	}
+	if updated["agent_notes"] != "first\nsecond" {
+		t.Fatalf("agent_notes = %v, want first\\nsecond", updated["agent_notes"])
+	}
+
+	for _, body := range []string{`{"note":""}`, `{"note":"   "}`, `{}`, `{"note":42}`, `{"note":null}`} {
+		rec := appendNote(task.ID, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: expected 400, got %d", body, rec.Code)
+		}
+	}
+
+	rec = appendNote("task_missing", `{"note":"hello"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for an unknown task, got %d", rec.Code)
+	}
+
+	req := testReq(http.MethodGet, "/api/agent/tasks/"+task.ID+"/notes", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET, got %d", rec.Code)
+	}
 }

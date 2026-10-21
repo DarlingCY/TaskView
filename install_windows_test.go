@@ -65,7 +65,7 @@ func TestScheduledTaskCommandPinsStableBinaryAndDataDir(t *testing.T) {
 	args := scheduledTaskCommand(managed, `C:\Users\someone\.taskview`)
 	joined := strings.Join(args, " ")
 
-	for _, want := range []string{"server", "start", "--port", "3333", "--data-dir"} {
+	for _, want := range []string{"--background", "--data-dir"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("registered command %q missing %q", joined, want)
 		}
@@ -483,16 +483,16 @@ func TestTaskArgumentsExcludeExecutable(t *testing.T) {
 	dataDir := `C:\Users\someone\.taskview`
 
 	args := scheduledTaskCommand(managed, dataDir)
-	if len(args) == 0 || args[0] != "server" {
-		t.Fatalf("scheduledTaskCommand must start with the subcommand, got %v", args)
+	if len(args) == 0 || args[0] != "--background" {
+		t.Fatalf("scheduledTaskCommand must start in background mode, got %v", args)
 	}
 
 	got := composeTaskArguments(args)
 	if strings.Contains(got, managed) || strings.Contains(got, ".exe") {
 		t.Errorf("arguments %q must not repeat the executable path", got)
 	}
-	if !strings.HasPrefix(got, "server start") {
-		t.Errorf("arguments %q should start with \"server start\"", got)
+	if !strings.HasPrefix(got, "--background --data-dir") {
+		t.Errorf("arguments %q should start in background mode with an explicit data directory", got)
 	}
 
 	// And the generated document must agree.
@@ -504,8 +504,8 @@ func TestTaskArgumentsExcludeExecutable(t *testing.T) {
 	if strings.Contains(xmlArgs, ".exe") {
 		t.Errorf("<Arguments> = %q, must not contain the executable path", xmlArgs)
 	}
-	if !strings.HasPrefix(xmlArgs, "server start") {
-		t.Errorf("<Arguments> = %q, want it to start with \"server start\"", xmlArgs)
+	if !strings.HasPrefix(xmlArgs, "--background --data-dir") {
+		t.Errorf("<Arguments> = %q, want background mode with an explicit data directory", xmlArgs)
 	}
 	// <Command> still carries the path.
 	cmdLine := unescapeXMLText(betweenTags(doc, "<Command>", "</Command>"))

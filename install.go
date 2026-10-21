@@ -1,13 +1,15 @@
-// TaskView explicit installation.
+// TaskView installed-application support.
 //
-// Install and Uninstall are opt-in: nothing here runs as a side effect of any
-// other command, PATH is never modified, and the task database is never touched.
-// The CLI integration writer calls these two functions directly.
+// The public interface is the installed tray application plus its local HTTP
+// API; there is no command line interface. Install and Uninstall remain the
+// library-level primitives behind the installer helper. Nothing here runs as a
+// side effect of any other entry point, PATH is never modified, and the task
+// database is never touched.
 //
 // Windows registers an optional login autostart through Task Scheduler (not the
 // Windows Service Control Manager), scoped to the current interactive user at
 // least privilege with no password and no elevation. Every other platform
-// supports install/uninstall but reports --autostart as unsupported before
+// supports install/uninstall but reports autostart as unsupported before
 // anything is written to disk.
 package main
 
@@ -547,13 +549,6 @@ func writeInstallManifest(dataDir string, manifest *installManifest) error {
 // ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
-
-func appVersion() string {
-	if v := strings.TrimSpace(os.Getenv("TASKVIEW_VERSION")); v != "" {
-		return v
-	}
-	return "dev"
-}
 
 // ---------------------------------------------------------------------------
 // Deferred self-removal

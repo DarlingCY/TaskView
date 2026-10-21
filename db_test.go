@@ -511,6 +511,91 @@ func TestAppendNotes(t *testing.T) {
 	}
 }
 
+// TestAppendNotesIsAtomicUnderConcurrency guards the append against the
+// read-modify-write race: every note has to survive, no matter how many
+// writers append at the same time.
+func TestAppendNotesIsAtomicUnderConcurrency(t *testing.T) {
+	store := memStore(t)
+	task := create(t, store, map[string]any{"title": "Concurrent notes"})
+
+	const (
+		writers   = 8
+		perWriter = 5
+	)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*perWriter)
+	for worker := 0; worker < writers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				if _, err := store.AppendNotes(task.ID, fmt.Sprintf("note-%d-%d", worker, i)); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("AppendNotes: %v", err)
+	}
+
+	updated, err := store.GetTask(task.ID)
+	if err != nil || updated == nil {
+		t.Fatalf("GetTask: (%v, %v)", updated, err)
+	}
+	if updated.AgentNotes == nil {
+		t.Fatal("AgentNotes is nil, want the appended notes")
+	}
+	lines := strings.Split(*updated.AgentNotes, "\n")
+	if len(lines) != writers*perWriter {
+		t.Fatalf("got %d notes, want %d - an append was lost", len(lines), writers*perWriter)
+	}
+	seen := make(map[string]bool, len(lines))
+	for _, line := range lines {
+		seen[line] = true
+	}
+	for worker := 0; worker < writers; worker++ {
+		for i := 0; i < perWriter; i++ {
+			want := fmt.Sprintf("note-%d-%d", worker, i)
+			if !seen[want] {
+				t.Errorf("note %q is missing", want)
+			}
+		}
+	}
+}
+
+// TestAppendNotesKeepsBusinessUpdateLogic checks that appending a note
+// behaves like any other update: the modification time moves, the closing
+// time stays as it is.
+func TestAppendNotesKeepsBusinessUpdateLogic(t *testing.T) {
+	store := memStore(t)
+	task := create(t, store, map[string]any{"title": "Done task", "status": "done"})
+	if task.ClosedAt == nil {
+		t.Fatal("a task created as done must have a closed_at")
+	}
+	closedAt := *task.ClosedAt
+
+	// Make the timestamp change observable.
+	time.Sleep(2 * time.Millisecond)
+	updated, err := store.AppendNotes(task.ID, "a note")
+	if err != nil {
+		t.Fatalf("AppendNotes: %v", err)
+	}
+	if updated.UpdatedAt <= task.UpdatedAt {
+		t.Errorf("UpdatedAt = %d, want more than %d", updated.UpdatedAt, task.UpdatedAt)
+	}
+	if updated.ClosedAt == nil || *updated.ClosedAt != closedAt {
+		t.Errorf("ClosedAt = %v, want %v - appending a note must not close a task", updated.ClosedAt, closedAt)
+	}
+	if updated.Status != "done" {
+		t.Errorf("Status = %q, want done", updated.Status)
+	}
+}
+
 // ------------------------------------------------------------ validation --
 
 func TestLineNumberValidation(t *testing.T) {
@@ -845,6 +930,86 @@ func TestListTasksLimit(t *testing.T) {
 	}
 	if len(unlimited) != 5 {
 		t.Errorf("unlimited returned %d tasks, want 5", len(unlimited))
+	}
+}
+
+// TestListTasksOffsetPagesThroughTheResultSet walks a result set with a
+// limit and an offset and checks that every task is handed out exactly once.
+func TestListTasksOffsetPagesThroughTheResultSet(t *testing.T) {
+	store := memStore(t)
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		create(t, store, map[string]any{"title": fmt.Sprintf("task %d", i), "project_path": dir})
+	}
+
+	var (
+		seen  []string
+		limit = 2
+	)
+	for offset := 0; ; offset += limit {
+		page, err := store.ListTasks(ListOptions{ProjectPath: dir, Limit: limit, Offset: offset})
+		if err != nil {
+			t.Fatalf("ListTasks(offset %d): %v", offset, err)
+		}
+		for _, task := range page {
+			seen = append(seen, task.ID)
+		}
+		if len(page) < limit {
+			break
+		}
+	}
+
+	if len(seen) != 5 {
+		t.Fatalf("paged through %d tasks, want 5", len(seen))
+	}
+	unique := make(map[string]bool, len(seen))
+	for _, id := range seen {
+		if unique[id] {
+			t.Errorf("task %s was returned twice", id)
+		}
+		unique[id] = true
+	}
+
+	beyond, err := store.ListTasks(ListOptions{ProjectPath: dir, Limit: 2, Offset: 99})
+	if err != nil {
+		t.Fatalf("ListTasks(offset past the end): %v", err)
+	}
+	if len(beyond) != 0 {
+		t.Errorf("offset past the end returned %d tasks, want 0", len(beyond))
+	}
+}
+
+// TestListTasksOrdersEqualTimestampsByID pins the tie-breaker: tasks that
+// share a timestamp keep a stable order, so a paged result set never shows
+// the same task twice or skips one.
+func TestListTasksOrdersEqualTimestampsByID(t *testing.T) {
+	store := memStore(t)
+	dir := t.TempDir()
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		task := create(t, store, map[string]any{"title": fmt.Sprintf("task %d", i), "project_path": dir})
+		ids = append(ids, task.ID)
+	}
+	// Flatten the timestamps so that only the id can break the tie.
+	if _, err := store.db.Exec(`UPDATE tasks SET created_at = 1000, updated_at = 1000`); err != nil {
+		t.Fatalf("flatten timestamps: %v", err)
+	}
+
+	for _, sortName := range []string{"updated", "created", "priority", "title"} {
+		tasks, err := store.ListTasks(ListOptions{ProjectPath: dir, Sort: sortName})
+		if err != nil {
+			t.Fatalf("ListTasks(sort %s): %v", sortName, err)
+		}
+		got := make([]string, 0, len(tasks))
+		for _, task := range tasks {
+			got = append(got, task.ID)
+		}
+		// Every sort breaks the tie on the id here, and the titles run in
+		// creation order, so the id order is the expected order throughout.
+		if !reflect.DeepEqual(got, ids) {
+			t.Errorf("sort %s returned %v, want %v", sortName, got, ids)
+		}
 	}
 }
 
@@ -2128,6 +2293,63 @@ func dumpLegacyTasks(t *testing.T, path string) []map[string]string {
 	}
 	defer db.Close()
 	return dumpTasks(t, db, legacyTaskColumns)
+}
+
+// ------------------------------------------------------------ path helpers --
+
+// TestNormalizeProjectPathRequiresAnAbsolutePath pins the rule the HTTP API
+// relies on: a project has to be named explicitly, because the server's
+// working directory is the install directory.
+func TestNormalizeProjectPathRequiresAnAbsolutePath(t *testing.T) {
+	abs := t.TempDir()
+	got, err := NormalizeProjectPath(abs)
+	if err != nil {
+		t.Fatalf("NormalizeProjectPath(%q): %v", abs, err)
+	}
+	if got != filepath.Clean(abs) {
+		t.Errorf("NormalizeProjectPath(%q) = %q, want %q", abs, got, filepath.Clean(abs))
+	}
+
+	for _, bad := range []string{"", "   ", "relative/path", "./sibling", "..\\parent"} {
+		if _, err := NormalizeProjectPath(bad); !IsValidationError(err) {
+			t.Errorf("NormalizeProjectPath(%q): err = %v, want ValidationError", bad, err)
+		}
+	}
+}
+
+func TestProjectNameFromPath(t *testing.T) {
+	nested := filepath.Join(string(filepath.Separator), "dev", "my-app")
+	if got := ProjectNameFromPath(nested); got != "my-app" {
+		t.Errorf("ProjectNameFromPath(%q) = %q, want my-app", nested, got)
+	}
+	if got := ProjectNameFromPath("  " + nested + "  "); got != "my-app" {
+		t.Errorf("ProjectNameFromPath with padding = %q, want my-app", got)
+	}
+	if got := ProjectNameFromPath(""); got != "" {
+		t.Errorf("ProjectNameFromPath(\"\") = %q, want an empty name", got)
+	}
+
+	// A volume root has no directory component of its own.
+	if runtime.GOOS == "windows" {
+		if got := ProjectNameFromPath("C:\\"); got != "C:" {
+			t.Errorf("ProjectNameFromPath(\"C:\\\\\") = %q, want C:", got)
+		}
+	}
+}
+
+func TestPingReadsTheDatabase(t *testing.T) {
+	store := memStore(t)
+	if err := store.Ping(); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	closed := mustOpen(t, filepath.Join(t.TempDir(), "closed.db"))
+	if err := closed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := closed.Ping(); err == nil {
+		t.Error("Ping on a closed store should fail, the health check must not lie")
+	}
 }
 
 // ---------------------------------------------------------------- helpers --

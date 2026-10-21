@@ -698,6 +698,27 @@
     return parts.slice(0, parts.length - 2).join('/') + '/…/' + parts.slice(-2).join('/');
   }
 
+  // deriveProjectName mirrors the server rule: the name of a project is the
+  // last directory of its path. The server does the same, so the form can
+  // show the name a task will be filed under.
+  function deriveProjectName(projectPath) {
+    const raw = String(projectPath || '').trim();
+    if (!raw) return '';
+    const parts = raw.split(/[\\/]/).filter(Boolean);
+    if (!parts.length) return raw;
+    return parts[parts.length - 1];
+  }
+
+  // isAbsolutePath catches the obvious mistakes before the request is sent.
+  // The server has the final say on what it accepts.
+  function isAbsolutePath(projectPath) {
+    const raw = String(projectPath || '').trim();
+    if (!raw) return false;
+    if (/^[A-Za-z]:[\\/]/.test(raw)) return true;   // C:\dev\my-app
+    if (raw.charAt(0) === '/') return true;          // /home/me/my-app
+    return false;
+  }
+
   function relativeTime(ts) {
     if (!ts) return '—';
     const then = Number(ts);
@@ -1190,7 +1211,7 @@
 
   async function patchTask(id, fields, successMessage) {
     try {
-      const updated = unwrapTask(await api('/api/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: fields }));
+      const updated = unwrapTask(await api('/api/board/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: fields }));
       if (updated) replaceTask(updated);
       if (successMessage) toast(successMessage, { tone: 'success' });
       return updated;
@@ -1207,7 +1228,7 @@
     task.status = status;
     task.updated_at = Date.now();
     try {
-      const updated = unwrapTask(await api('/api/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: { status: status } }));
+      const updated = unwrapTask(await api('/api/board/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: { status: status } }));
       if (updated) replaceTask(updated);
       renderAll();
       refreshStats();
@@ -1235,7 +1256,7 @@
     // Keep the board priority-ordered while the PATCH is in flight
     if (state.view === 'board') { renderAll(); refreshTopbarCount(); }
     try {
-      const updated = unwrapTask(await api('/api/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: { priority: next } }));
+      const updated = unwrapTask(await api('/api/board/tasks/' + encodeURIComponent(id), { method: 'PATCH', body: { priority: next } }));
       if (updated) replaceTask(updated);
       renderAll();
       refreshStats();
@@ -1260,6 +1281,31 @@
   }
 
   /* ==================================================================== data */
+  const TASK_PAGE_SIZE = 100;   // page size the API serves for a task listing
+
+  // fetchAllTasks walks every page of a task listing. The API hands out
+  // bounded pages, so the front end keeps asking until a short page ends the
+  // walk. Tasks are deduplicated by id, because a task that is edited while
+  // the pages are read could show up twice.
+  async function fetchAllTasks(scope) {
+    const tasks = [];
+    const seen = new Set();
+    for (let offset = 0; ; offset += TASK_PAGE_SIZE) {
+      const page = await api(scope + '&limit=' + TASK_PAGE_SIZE + '&offset=' + offset);
+      const items = Array.isArray(page) ? page : [];
+      for (const task of items) {
+        if (!task) continue;
+        if (task.id) {
+          if (seen.has(task.id)) continue;
+          seen.add(task.id);
+        }
+        tasks.push(task);
+      }
+      if (items.length < TASK_PAGE_SIZE) break;
+    }
+    return tasks;
+  }
+
   async function loadAll(opts) {
     const options = opts || {};
     if (options.silent) state.refreshing = true; else state.loading = true;
@@ -1267,16 +1313,16 @@
     renderLoadState();
 
     const scope = state.projectPath
-      ? '/api/tasks?project_path=' + encodeURIComponent(state.projectPath)
-      : '/api/tasks?all=true';
+      ? '/api/board/tasks?project_path=' + encodeURIComponent(state.projectPath)
+      : '/api/board/tasks?all=true';
 
     try {
       const results = await Promise.all([
-        api('/api/projects'),
-        api(scope),
+        api('/api/board/projects'),
+        fetchAllTasks(scope),
         state.projectPath
-          ? api('/api/stats?project_path=' + encodeURIComponent(state.projectPath))
-          : api('/api/stats'),
+          ? api('/api/board/stats?project_path=' + encodeURIComponent(state.projectPath))
+          : api('/api/board/stats'),
       ]);
       state.projects = Array.isArray(results[0]) ? results[0] : [];
       state.tasks = Array.isArray(results[1]) ? results[1] : [];
@@ -1295,8 +1341,8 @@
 
   function refreshStats() {
     const url = state.projectPath
-      ? '/api/stats?project_path=' + encodeURIComponent(state.projectPath)
-      : '/api/stats';
+      ? '/api/board/stats?project_path=' + encodeURIComponent(state.projectPath)
+      : '/api/board/stats';
     api(url).then(function (stats) {
       state.stats = stats || state.stats;
       renderStats();
@@ -1442,7 +1488,7 @@
   }
 
   function refreshSidebarCounts() {
-    api('/api/projects').then(function (projects) {
+    api('/api/board/projects').then(function (projects) {
       state.projects = Array.isArray(projects) ? projects : state.projects;
       renderSidebar();
     }).catch(function () {});
@@ -1952,10 +1998,6 @@
     const isEdit = !!task;
     const t = task || { status: 'todo', priority: 'medium' };
     const selectedProject = isEdit ? (t.project_path || '') : (state.projectPath || '');
-    const defaultName = isEdit ? (t.project_name || '') : (function () {
-      const p = state.projects.find(function (x) { return x.path === selectedProject; });
-      return p ? p.name : '';
-    })();
 
     const layer = openModal({
       size: 'max-w-3xl',
@@ -1993,20 +2035,15 @@
 
             '<div class="rounded-xl border border-line-2 bg-surface2/40 p-3.5">' +
               '<div class="mb-3 flex items-center gap-2">' + icon('folder', 'h-3.5 w-3.5 text-ink3') + '<h3 class="text-[11px] font-600 uppercase tracking-[.1em] text-ink3">项目</h3></div>' +
-              '<div class="grid gap-3 sm:grid-cols-2">' +
-                '<div>' +
-                  '<label class="label" for="f-project-trigger">已知项目</label>' +
-                  '<select id="f-project" data-field="project" class="hidden" tabindex="-1">' + projectOptions(selectedProject) + '</select>' +
-                '</div>' +
-                '<div>' +
-                  '<label class="label" for="f-project-name">显示名称</label>' +
-                  '<input id="f-project-name" data-field="project_name" class="field" placeholder="TaskView" value="' + attr(defaultName) + '" />' +
-                '</div>' +
+              '<div>' +
+                '<label class="label" for="f-project-trigger">已知项目</label>' +
+                '<select id="f-project" data-field="project" class="hidden" tabindex="-1">' + projectOptions(selectedProject) + '</select>' +
               '</div>' +
               '<div class="mt-3">' +
-                '<label class="label" for="f-project-path">项目路径</label>' +
+                '<label class="label" for="f-project-path">项目路径 <span class="text-urgent">*</span></label>' +
                 '<input id="f-project-path" data-field="project_path" class="field font-mono !text-[11.5px]" placeholder="C:\\dev\\my-app  ·  /home/me/my-app" value="' + attr(selectedProject) + '" />' +
-                '<p class="mt-1 text-[11px] text-ink3">留空则将此任务归入当前工作目录。</p>' +
+                '<p data-error-for="project_path" class="mt-1 hidden text-[11px] text-urgent"></p>' +
+                '<p class="mt-1 text-[11px] text-ink3">必须是绝对路径；项目名由路径的最后一级目录自动生成：<span data-derived-name class="text-ink2">—</span></p>' +
               '</div>' +
             '</div>' +
 
@@ -2084,33 +2121,36 @@
       });
     });
 
-    // project select -> autofill name/path
+    // project select -> autofill path
     const projectSelect = layer.querySelector('[data-field="project"]');
     const pathInput = layer.querySelector('[data-field="project_path"]');
-    const nameInput = layer.querySelector('[data-field="project_name"]');
+    const derivedName = layer.querySelector('[data-derived-name]');
     if (projectSelect) {
       initTselect(projectSelect, { minWidth: 160 });
       projectSelect.addEventListener('change', function () {
         const value = projectSelect.value;
         pathInput.value = value;
-        const project = state.projects.find(function (p) { return p.path === value; });
-        if (project) nameInput.value = project.name;
+        showDerivedName();
       });
     }
-    if (pathInput && nameInput) {
+    if (pathInput) {
       pathInput.addEventListener('input', function () {
         if (projectSelect && projectSelect.value !== pathInput.value) {
           projectSelect.value = '';
           if (projectSelect._tselectSync) projectSelect._tselectSync();
         }
-        const raw = pathInput.value.trim();
-        if (raw && !nameInput.dataset.touched) {
-          const parts = raw.split(/[\\/]/).filter(Boolean);
-          nameInput.value = parts[parts.length - 1] || raw;
-        }
+        showDerivedName();
       });
     }
-    if (nameInput) nameInput.addEventListener('input', function () { nameInput.dataset.touched = '1'; });
+
+    // The project name is not typed in: the server derives it from the last
+    // directory of the path, so the form only shows what that name will be.
+    function showDerivedName() {
+      if (!derivedName) return;
+      const name = deriveProjectName(pathInput ? pathInput.value : '');
+      derivedName.textContent = name || '—';
+    }
+    showDerivedName();
 
     // delete action inside the editor
     const deleteBtn = layer.querySelector('[data-delete-task]');
@@ -2133,11 +2173,26 @@
       const get = function (name) { const el = layer.querySelector('[data-field="' + name + '"]'); return el ? el.value.trim() : ''; };
 
       const title = get('title');
+      const projectPath = get('project_path');
       const lineStartRaw = get('line_start');
       const lineEndRaw = get('line_end');
 
-      showError('title', ''); showError('lines', '');
+      showError('title', ''); showError('lines', ''); showError('project_path', '');
       if (!title) { showError('title', '请输入简短且明确的任务标题。'); layer.querySelector('[data-field="title"]').focus(); return; }
+
+      // The project has to be named by an absolute path: the service runs from
+      // its install directory, so a relative path would file the task under
+      // the wrong project.
+      if (!projectPath) {
+        showError('project_path', '请填写项目的绝对路径。');
+        if (pathInput) pathInput.focus();
+        return;
+      }
+      if (!isAbsolutePath(projectPath)) {
+        showError('project_path', '项目路径必须是绝对路径，例如 C:\\dev\\my-app。');
+        if (pathInput) pathInput.focus();
+        return;
+      }
 
       let lineStart = null, lineEnd = null;
       if (lineStartRaw) {
@@ -2165,8 +2220,8 @@
         line_end: lineEnd,
         code_snippet: get('code_snippet') || null,
         agent_notes: get('agent_notes') || null,
-        project_name: get('project_name') || null,
-        project_path: get('project_path') || null,
+        project_name: deriveProjectName(projectPath),
+        project_path: projectPath,
       };
 
       submit.disabled = true;
@@ -2174,8 +2229,8 @@
       submit.innerHTML = '<span class="inline-flex animate-spin">' + icon('loader', 'h-3.5 w-3.5') + '</span> 保存中…';
 
       const request = task
-        ? api('/api/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', body: payload })
-        : api('/api/tasks', { method: 'POST', body: payload });
+        ? api('/api/board/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', body: payload })
+        : api('/api/board/tasks', { method: 'POST', body: payload });
 
       request.then(function (data) {
         const saved = unwrapTask(data);
@@ -2333,7 +2388,7 @@
     if (index !== -1) state.tasks.splice(index, 1);
     renderAll();
     try {
-      await api('/api/tasks/' + encodeURIComponent(task.id), { method: 'DELETE' });
+      await api('/api/board/tasks/' + encodeURIComponent(task.id), { method: 'DELETE' });
       refreshStats();
       refreshSidebarCounts();
       toast('任务已删除', {
@@ -2354,7 +2409,7 @@
               project_name: snapshot.project_name,
               project_path: snapshot.project_path,
             };
-            const restored = unwrapTask(await api('/api/tasks', { method: 'POST', body: payload }));
+            const restored = unwrapTask(await api('/api/board/tasks', { method: 'POST', body: payload }));
             if (restored) replaceTask(restored);
             toast('任务已恢复', { tone: 'success' });
             loadAll({ silent: true });

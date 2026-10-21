@@ -1,7 +1,6 @@
 # Build output & binaries
 /dist/
 *.exe
-!/skills/task-view/scripts/taskview.exe
 *.exe~
 *.dll
 *.so
@@ -25,3 +24,6 @@ yarn-error.log*
 # OS & Editor files
 .DS_Store
 Thumbs.db
+
+# Generated Windows resource file (build-windows.ps1 cleans it up)
+/*_windows_*.syso
