@@ -47,6 +47,7 @@
           backlog: 'rgb(var(--c-backlog) / <alpha-value>)',
           todo: 'rgb(var(--c-todo) / <alpha-value>)',
           progress: 'rgb(var(--c-progress) / <alpha-value>)',
+          review: 'rgb(var(--c-review) / <alpha-value>)',
           done: 'rgb(var(--c-done) / <alpha-value>)',
           urgent: 'rgb(var(--c-urgent) / <alpha-value>)',
           high: 'rgb(var(--c-high) / <alpha-value>)',
@@ -99,6 +100,7 @@
     --c-backlog: 125 135 152;
     --c-todo: 14 165 233;
     --c-progress: 245 158 11;
+    --c-review: 8 145 178;
     --c-done: 16 185 129;
     --c-urgent: 244 63 94;
     --c-high: 249 115 22;
@@ -123,6 +125,7 @@
     --c-backlog: 130 139 158;
     --c-todo: 56 165 235;
     --c-progress: 245 158 11;
+    --c-review: 34 211 238;
     --c-done: 16 185 129;
     --c-urgent: 251 113 133;
     --c-high: 251 146 60;
@@ -614,6 +617,7 @@
     loader: '<path d="M12 2.6v3.6M12 17.8v3.6M4.5 4.5l2.6 2.6M16.9 16.9l2.6 2.6M2.6 12h3.6M17.8 12h3.6M4.5 19.5l2.6-2.6M16.9 7.1l2.6-2.6"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.8h.01"/>',
     checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8.2 12.2 2.6 2.6 5-5.2"/>',
+    shieldCheck: '<path d="M12 2.6 4.5 5.6v5.2c0 4.5 3 8.4 7.5 10.6 4.5-2.2 7.5-6.1 7.5-10.6V5.6z"/><path d="m8.8 11.8 2.2 2.2 4.2-4.4"/>',
     dots: '<circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
     external: '<path d="M14 3.5h6.5V10"/><path d="M20.5 3.5 11.5 12.5"/><path d="M18 13.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5.5"/>',
     plusCircle: '<circle cx="12" cy="12" r="9"/><path d="M12 8.2v7.6M8.2 12h7.6"/>',
@@ -631,12 +635,16 @@
   }
 
   /* =============================================================== constants */
-  const STATUS_ORDER = ['backlog', 'todo', 'in_progress', 'done'];
+  // The five board columns, in pipeline order. `review` sits between
+  // `in_progress` and `done`: work is finished but still needs a verification
+  // pass before it counts as done.
+  const STATUS_ORDER = ['backlog', 'todo', 'in_progress', 'review', 'done'];
   const STATUS_META = {
-    backlog:     { label: '待整理',     short: '待整理', icon: 'inbox',      tone: 'backlog',   empty: '待整理区为空', hint: '拖拽卡片至此，或新建任务。' },
-    todo:        { label: '待办',       short: '待办',   icon: 'clock',      tone: 'todo',      empty: '待办队列已清空', hint: '从待整理区移入下一个任务。' },
-    in_progress: { label: '进行中',     short: '进行中', icon: 'zap',        tone: 'progress', empty: '暂无进行中的工作', hint: '将任务拖拽至此开始处理。' },
-    done:        { label: '已完成',     short: '已完成', icon: 'checkCircle', tone: 'done',     empty: '尚未完成任何任务', hint: '已完成的任务会自动归入此处。' },
+    backlog:     { label: '待整理',     short: '待整理', icon: 'inbox',       tone: 'backlog',   empty: '待整理区为空', hint: '拖拽卡片至此，或新建任务。' },
+    todo:        { label: '待办',       short: '待办',   icon: 'clock',       tone: 'todo',      empty: '待办队列已清空', hint: '从待整理区移入下一个任务。' },
+    in_progress: { label: '进行中',     short: '进行中', icon: 'zap',         tone: 'progress',  empty: '暂无进行中的工作', hint: '将任务拖拽至此开始处理。' },
+    review:      { label: '待审查验证', short: '待审查', icon: 'shieldCheck', tone: 'review',    empty: '暂无待审查的任务', hint: '将已完成实现的任务拖拽至此等待验证。' },
+    done:        { label: '已完成',     short: '已完成', icon: 'checkCircle', tone: 'done',      empty: '尚未完成任何任务', hint: '已完成的任务会自动归入此处。' },
   };
   const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'];
   const PRIORITY_META = {
@@ -659,7 +667,7 @@
     listPageKey: '',      // filter/view/sort signature the current page belongs to
     tasks: [],
     projects: [],
-    stats: { total: 0, backlog: 0, todo: 0, in_progress: 0, done: 0 },
+    stats: { total: 0, backlog: 0, todo: 0, in_progress: 0, review: 0, done: 0 },
     loading: true,
     refreshing: false,
     error: null,
@@ -1382,7 +1390,7 @@
       let html = '';
       STATUS_ORDER.forEach(function () {
         html +=
-          '<div class="flex min-w-[290px] flex-1 flex-col rounded-xl border border-line bg-surface/45">' +
+          '<div class="flex min-w-[236px] flex-1 flex-col rounded-xl border border-line bg-surface/45">' +
             '<div class="flex items-center gap-2 border-b border-line-2 px-3.5 py-3">' +
               '<span class="h-2.5 w-2.5 rounded-full bg-surface3"></span>' +
               '<span class="h-3 w-24 animate-pulse rounded bg-surface3"></span>' +
@@ -1435,10 +1443,13 @@
 
   // PROJECT_STATUS_COUNTS maps the per-status counters of a project to the
   // tone of the matching status. The dot next to the number uses that tone.
+  // Every status that is not done is counted, so the row shows the full
+  // open workload of a project.
   const PROJECT_STATUS_COUNTS = [
     { key: 'backlog_tasks', status: 'backlog' },
     { key: 'todo_tasks', status: 'todo' },
     { key: 'in_progress_tasks', status: 'in_progress' },
+    { key: 'review_tasks', status: 'review' },
   ];
 
   // statusCountDots renders the per-status counters of a project as a
@@ -1453,7 +1464,7 @@
           '<span class="text-[10px] tabular-nums ' + (count > 0 ? 'text-ink2' : 'text-ink3') + '">' + count + '</span>' +
         '</span>';
     });
-    return '<span class="flex shrink-0 items-center gap-2">' + cells.join('') + '</span>';
+    return '<span class="flex shrink-0 items-center gap-1.5">' + cells.join('') + '</span>';
   }
 
   function renderSidebar() {
@@ -1515,7 +1526,7 @@
 
   /* ------------------------------------------------------------------- stats */
   function renderStats() {
-    const stats = state.stats || { total: 0, backlog: 0, todo: 0, in_progress: 0, done: 0 };
+    const stats = state.stats || { total: 0, backlog: 0, todo: 0, in_progress: 0, review: 0, done: 0 };
     const total = Number(stats.total) || 0;
     const done = Number(stats.done) || 0;
     const rate = total ? Math.round((done / total) * 100) : 0;
@@ -1609,7 +1620,10 @@
 
   function renderBoard() {
     const tasks = state.tasks.filter(matchesFilters).sort(byBoardPriority);
-    const grouped = { backlog: [], todo: [], in_progress: [], done: [] };
+    // The buckets follow STATUS_ORDER, so every known status has its own
+    // column and a task can never fall through into another column.
+    const grouped = {};
+    STATUS_ORDER.forEach(function (status) { grouped[status] = []; });
     tasks.forEach(function (task) { (grouped[task.status] || grouped.todo).push(task); });
 
     let html = '';
@@ -1617,7 +1631,7 @@
       const meta = STATUS_META[status];
       const items = grouped[status];
       html +=
-        '<div class="flex min-w-[288px] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface/40 backdrop-blur-sm transition-colors duration-200 col-wrap" data-status="' + status + '">' +
+        '<div class="flex min-w-[236px] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-surface/40 backdrop-blur-sm transition-colors duration-200 col-wrap" data-status="' + status + '">' +
           '<header class="flex shrink-0 items-center gap-2 border-b border-line-2 px-3.5 py-2.5">' +
             '<span class="grid h-6 w-6 shrink-0 place-items-center rounded-md" style="background:rgb(var(--c-' + meta.tone + ') / .14); color:rgb(var(--c-' + meta.tone + '))">' + icon(meta.icon, 'h-3.5 w-3.5') + '</span>' +
             '<h3 class="font-display text-[12.5px] font-600 tracking-tight text-ink">' + meta.label + '</h3>' +
@@ -1942,17 +1956,26 @@
   });
 
   /* =========================================================== task editor */
+  // The base classes of a segmented-control button. They are shared by the
+  // status and the priority segment and re-applied when a button is toggled,
+  // so the two places can never drift apart.
+  const SEGMENT_BTN = 'flex flex-col items-center gap-1 whitespace-nowrap rounded-lg border px-1.5 py-2 text-[10.5px] font-500 transition-all duration-150';
+
+  // The status segment holds five states. Three columns on narrow screens
+  // (two tidy rows, no clipped label) and five columns from the `sm`
+  // breakpoint up. The tracks are equal, so the long "待审查验证" label always
+  // fits and the group never overflows its container.
   function statusSegment(current) {
-    let html = '<div class="grid grid-cols-4 gap-1.5" data-segment="status">';
+    let html = '<div class="grid grid-cols-3 gap-1.5 sm:grid-cols-5" data-segment="status">';
     STATUS_ORDER.forEach(function (status) {
       const meta = STATUS_META[status];
       const on = current === status;
       html +=
-        '<button type="button" data-value="' + status + '" aria-pressed="' + on + '" ' +
-          'class="flex flex-col items-center gap-1 rounded-lg border px-1.5 py-2 text-[10.5px] font-500 transition-all duration-150 ' +
+        '<button type="button" data-value="' + status + '" aria-pressed="' + on + '" title="' + attr(meta.label) + '" ' +
+          'class="' + SEGMENT_BTN + ' ' +
           (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2') + '"' +
           (on ? ' style="background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))"' : '') + '>' +
-          icon(meta.icon, 'h-4 w-4') + meta.short + '</button>';
+          icon(meta.icon, 'h-4 w-4') + meta.label + '</button>';
     });
     return html + '</div>';
   }
@@ -1964,7 +1987,7 @@
       const on = current === key;
       html +=
         '<button type="button" data-value="' + key + '" aria-pressed="' + on + '" ' +
-          'class="flex flex-col items-center gap-1 rounded-lg border px-1.5 py-2 text-[10.5px] font-500 transition-all duration-150 ' +
+          'class="' + SEGMENT_BTN + ' ' +
           (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2') + '"' +
           (on ? ' style="background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))"' : '') + '>' +
           icon(meta.icon, 'h-4 w-4') + meta.label + '</button>';
@@ -2009,7 +2032,7 @@
             '</div>' +
 
             '<div class="grid gap-4 sm:grid-cols-2">' +
-              '<div>' +
+              '<div class="sm:col-span-2">' +
                 '<label class="label">状态</label>' +
                 statusSegment(t.status || 'todo') +
               '</div>' +
@@ -2099,7 +2122,7 @@
           const on = b === button;
           b.setAttribute('aria-pressed', String(on));
           const meta = key === 'status' ? STATUS_META[b.getAttribute('data-value')] : PRIORITY_META[b.getAttribute('data-value')];
-          b.className = 'flex flex-col items-center gap-1 rounded-lg border px-1.5 py-2 text-[10.5px] font-500 transition-all duration-150 ' +
+          b.className = SEGMENT_BTN + ' ' +
             (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2');
           if (on) b.setAttribute('style', 'background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))');
           else b.removeAttribute('style');

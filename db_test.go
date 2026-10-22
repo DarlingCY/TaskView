@@ -323,6 +323,133 @@ func TestUpdateTaskMaintainsClosedAt(t *testing.T) {
 	}
 }
 
+// The review stage sits between in_progress and done. It is an ordinary
+// status: it can be set from anywhere, it counts as unfinished and only
+// "done" closes a task.
+func TestReviewStatusIsAcceptedEverywhere(t *testing.T) {
+	store := memStore(t)
+
+	// Creation.
+	task := create(t, store, map[string]any{"title": "Needs review", "status": "review"})
+	if task.Status != "review" {
+		t.Fatalf("Status = %q, want review", task.Status)
+	}
+	if task.ClosedAt != nil {
+		t.Errorf("ClosedAt = %v, want NULL: review is not done", *task.ClosedAt)
+	}
+
+	// Reading it back.
+	reloaded, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if reloaded == nil || reloaded.Status != "review" {
+		t.Fatalf("reloaded = %+v, want status review", reloaded)
+	}
+
+	// Updating into review from another status.
+	moved, err := store.UpdateTask(task.ID, map[string]any{"status": "in_progress"})
+	if err != nil {
+		t.Fatalf("move to in_progress: %v", err)
+	}
+	// Make the timestamp change observable.
+	time.Sleep(2 * time.Millisecond)
+	back, err := store.UpdateTask(task.ID, map[string]any{"status": "review"})
+	if err != nil {
+		t.Fatalf("move to review: %v", err)
+	}
+	if back.Status != "review" {
+		t.Fatalf("Status = %q, want review", back.Status)
+	}
+	if back.ClosedAt != nil {
+		t.Errorf("ClosedAt = %v, want NULL while in review", *back.ClosedAt)
+	}
+	if back.UpdatedAt <= moved.UpdatedAt {
+		t.Errorf("UpdatedAt %d did not advance past %d", back.UpdatedAt, moved.UpdatedAt)
+	}
+
+	// Filtering by the new status.
+	listed, err := store.ListTasks(ListOptions{All: true, Status: "review"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != task.ID {
+		t.Fatalf("filtered list = %+v, want exactly the review task", listed)
+	}
+}
+
+// review -> done -> review must maintain closed_at: only "done" closes a
+// task, and leaving "done" reopens it.
+func TestReviewDoneReviewMaintainsClosedAt(t *testing.T) {
+	store := memStore(t)
+	task := create(t, store, map[string]any{"title": "Review loop", "status": "review"})
+
+	done, err := store.UpdateTask(task.ID, map[string]any{"status": "done"})
+	if err != nil {
+		t.Fatalf("move to done: %v", err)
+	}
+	if done.Status != "done" {
+		t.Fatalf("Status = %q, want done", done.Status)
+	}
+	if done.ClosedAt == nil {
+		t.Fatal("ClosedAt should be set when moving from review to done")
+	}
+	if *done.ClosedAt < done.CreatedAt {
+		t.Errorf("ClosedAt %d predates CreatedAt %d", *done.ClosedAt, done.CreatedAt)
+	}
+
+	back, err := store.UpdateTask(task.ID, map[string]any{"status": "review"})
+	if err != nil {
+		t.Fatalf("move back to review: %v", err)
+	}
+	if back.Status != "review" {
+		t.Fatalf("Status = %q, want review", back.Status)
+	}
+	if back.ClosedAt != nil {
+		t.Errorf("ClosedAt = %d, want NULL after leaving done", *back.ClosedAt)
+	}
+}
+
+// Appending a note must never move a task out of review.
+func TestAppendNotesKeepsReviewStatus(t *testing.T) {
+	store := memStore(t)
+	task := create(t, store, map[string]any{"title": "Review notes", "status": "review"})
+
+	updated, err := store.AppendNotes(task.ID, "verification pending")
+	if err != nil {
+		t.Fatalf("AppendNotes: %v", err)
+	}
+	if updated.Status != "review" {
+		t.Errorf("Status = %q, want review - a note must not reset the stage", updated.Status)
+	}
+	if updated.ClosedAt != nil {
+		t.Errorf("ClosedAt = %v, want NULL", *updated.ClosedAt)
+	}
+	if updated.AgentNotes == nil || *updated.AgentNotes != "verification pending" {
+		t.Errorf("AgentNotes = %v, want the appended note", updated.AgentNotes)
+	}
+}
+
+// A review task is unfinished: it counts towards the open bucket.
+func TestReviewCountsAsUnfinished(t *testing.T) {
+	store := memStore(t)
+	project := t.TempDir()
+
+	create(t, store, map[string]any{"title": "R1", "status": "review", "project_path": project})
+	create(t, store, map[string]any{"title": "D1", "status": "done", "project_path": project})
+
+	stats, err := store.GetStats(project)
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if stats.Review != 1 {
+		t.Errorf("Review = %d, want 1", stats.Review)
+	}
+	if stats.Open != 1 || stats.Done != 1 {
+		t.Errorf("stats = %+v, want open 1 done 1 - review is unfinished", stats)
+	}
+}
+
 func TestUpdateTaskAcceptsCamelCaseAliases(t *testing.T) {
 	store := memStore(t)
 	task := create(t, store, map[string]any{"title": "Camel"})
@@ -1383,6 +1510,7 @@ func TestGetProjects(t *testing.T) {
 
 	create(t, store, map[string]any{"title": "A1", "project_path": alphaPath, "project_name": "alpha", "status": "backlog"})
 	create(t, store, map[string]any{"title": "A2", "project_path": alphaPath, "project_name": "alpha", "status": "in_progress"})
+	create(t, store, map[string]any{"title": "A3", "project_path": alphaPath, "project_name": "alpha", "status": "review"})
 	create(t, store, map[string]any{"title": "B1", "project_path": betaPath, "project_name": "beta", "status": "done"})
 
 	projects, err := store.GetProjects()
@@ -1392,16 +1520,19 @@ func TestGetProjects(t *testing.T) {
 	if len(projects) != 2 {
 		t.Fatalf("got %d projects, want 2", len(projects))
 	}
-	// Ordered by open_tasks DESC, so alpha (2 open) precedes beta (0 open).
+	// Ordered by open_tasks DESC, so alpha (3 open) precedes beta (0 open).
 	alpha := projects[0]
 	if alpha.Path != alphaPath || alpha.Name != "alpha" {
 		t.Errorf("first project = %+v, want alpha at %s", alpha, alphaPath)
 	}
-	if alpha.TotalTasks != 2 || alpha.OpenTasks != 2 {
-		t.Errorf("alpha counts = %+v, want total 2 open 2", alpha)
+	if alpha.TotalTasks != 3 || alpha.OpenTasks != 3 {
+		t.Errorf("alpha counts = %+v, want total 3 open 3", alpha)
 	}
 	if alpha.BacklogTasks != 1 || alpha.TodoTasks != 0 || alpha.InProgressTasks != 1 {
 		t.Errorf("alpha status counts = %+v, want backlog 1 todo 0 in_progress 1", alpha)
+	}
+	if alpha.ReviewTasks != 1 {
+		t.Errorf("alpha.ReviewTasks = %d, want 1", alpha.ReviewTasks)
 	}
 	if alpha.UpdatedAt <= 0 {
 		t.Errorf("alpha.UpdatedAt = %d, want > 0", alpha.UpdatedAt)
@@ -1416,6 +1547,9 @@ func TestGetProjects(t *testing.T) {
 	if beta.BacklogTasks != 0 || beta.TodoTasks != 0 || beta.InProgressTasks != 0 {
 		t.Errorf("beta status counts = %+v, want all zero", beta)
 	}
+	if beta.ReviewTasks != 0 {
+		t.Errorf("beta.ReviewTasks = %d, want 0", beta.ReviewTasks)
+	}
 }
 
 func TestGetStats(t *testing.T) {
@@ -1427,14 +1561,16 @@ func TestGetStats(t *testing.T) {
 	create(t, store, map[string]any{"title": "2", "status": "todo", "project_path": primary})
 	create(t, store, map[string]any{"title": "3", "status": "todo", "project_path": primary})
 	create(t, store, map[string]any{"title": "4", "status": "in_progress", "project_path": primary})
-	create(t, store, map[string]any{"title": "5", "status": "done", "project_path": primary})
-	create(t, store, map[string]any{"title": "6", "status": "todo", "project_path": other})
+	create(t, store, map[string]any{"title": "5", "status": "review", "project_path": primary})
+	create(t, store, map[string]any{"title": "6", "status": "done", "project_path": primary})
+	create(t, store, map[string]any{"title": "7", "status": "todo", "project_path": other})
 
 	scoped, err := store.GetStats(primary)
 	if err != nil {
 		t.Fatalf("GetStats: %v", err)
 	}
-	if scoped.Total != 5 || scoped.Backlog != 1 || scoped.Todo != 2 || scoped.InProgress != 1 || scoped.Done != 1 || scoped.Open != 4 {
+	if scoped.Total != 6 || scoped.Backlog != 1 || scoped.Todo != 2 || scoped.InProgress != 1 ||
+		scoped.Review != 1 || scoped.Done != 1 || scoped.Open != 5 {
 		t.Errorf("scoped stats = %+v", scoped)
 	}
 	if scoped.ProjectPath == nil || *scoped.ProjectPath != primary {
@@ -1445,8 +1581,11 @@ func TestGetStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStats(all): %v", err)
 	}
-	if all.Total != 6 || all.Projects != 2 {
-		t.Errorf("global stats = %+v, want total 6 across 2 projects", all)
+	if all.Total != 7 || all.Projects != 2 {
+		t.Errorf("global stats = %+v, want total 7 across 2 projects", all)
+	}
+	if all.Review != 1 {
+		t.Errorf("global Review = %d, want 1", all.Review)
 	}
 	if all.ProjectPath != nil {
 		t.Errorf("global ProjectPath = %v, want nil", all.ProjectPath)
@@ -1519,7 +1658,7 @@ func TestProjectAndStatsJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal project: %v", err)
 	}
-	want := `{"path":"/p","name":"n","total_tasks":2,"open_tasks":1,"backlog_tasks":0,"todo_tasks":0,"in_progress_tasks":0,"updated_at":99}`
+	want := `{"path":"/p","name":"n","total_tasks":2,"open_tasks":1,"backlog_tasks":0,"todo_tasks":0,"in_progress_tasks":0,"review_tasks":0,"updated_at":99}`
 	if string(project) != want {
 		t.Errorf("project JSON = %s, want %s", project, want)
 	}
@@ -1528,7 +1667,7 @@ func TestProjectAndStatsJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stats: %v", err)
 	}
-	if string(stats) != `{"total":3,"backlog":0,"todo":0,"in_progress":0,"done":1,"open":2,"projects":1,"project_path":null}` {
+	if string(stats) != `{"total":3,"backlog":0,"todo":0,"in_progress":0,"review":0,"done":1,"open":2,"projects":1,"project_path":null}` {
 		t.Errorf("stats JSON = %s", stats)
 	}
 }
@@ -1560,6 +1699,41 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	}
 	if reloaded.CreatedAt != created.CreatedAt {
 		t.Errorf("CreatedAt changed: %d -> %d", created.CreatedAt, reloaded.CreatedAt)
+	}
+}
+
+// A task parked in review must survive a reopen unchanged, and the database
+// needs no migration: the status column has no CHECK constraint.
+func TestReviewStatusSurvivesReopen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "review.db")
+
+	first := mustOpen(t, file)
+	created := create(t, first, map[string]any{"title": "Parked", "status": "review"})
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	second := mustOpen(t, file)
+	reloaded, err := second.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if reloaded == nil {
+		t.Fatal("task did not survive reopen")
+	}
+	if reloaded.Status != "review" {
+		t.Errorf("Status = %q, want review", reloaded.Status)
+	}
+	if reloaded.ClosedAt != nil {
+		t.Errorf("ClosedAt = %d, want NULL", *reloaded.ClosedAt)
+	}
+
+	stats, err := second.GetStats("")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if stats.Review != 1 || stats.Open != 1 {
+		t.Errorf("stats = %+v, want review 1 open 1", stats)
 	}
 }
 
@@ -1866,6 +2040,9 @@ func TestLegacyDatabaseAggregatesAndUpdates(t *testing.T) {
 	}
 	if stats.Total != 2 || stats.InProgress != 1 || stats.Done != 1 || stats.Open != 1 {
 		t.Errorf("legacy stats = %+v, want total 2 in_progress 1 done 1", stats)
+	}
+	if stats.Review != 0 {
+		t.Errorf("legacy stats review = %d, want 0 - existing rows are untouched", stats.Review)
 	}
 	if stats.ProjectPath != nil {
 		t.Errorf("unscoped ProjectPath = %v, want nil", stats.ProjectPath)

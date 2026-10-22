@@ -9,6 +9,9 @@
 
 # Local TaskView database and runtime state
 /.taskview/
+/.taskview-preview/
+/.server-logs/
+/.servers.json
 *.db
 *.db-wal
 *.db-shm

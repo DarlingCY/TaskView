@@ -1,8 +1,8 @@
 'use strict';
 // Regression test for the project list in the sidebar.
 //
-// Every project row has to show the number of its backlog, todo and
-// in-progress tasks, each next to a dot in the colour of that status. The
+// Every project row has to show the number of its backlog, todo, in-progress
+// and review tasks, each next to a dot in the colour of that status. The
 // former single total/open counter is gone.
 //
 // The front end is a single inline script, so the test loads it into a Node
@@ -149,11 +149,12 @@ tv.state.projects = [
   {
     path: 'C:/work/alpha',
     name: 'alpha',
-    total_tasks: 7,
-    open_tasks: 5,
+    total_tasks: 10,
+    open_tasks: 8,
     backlog_tasks: 2,
     todo_tasks: 3,
     in_progress_tasks: 1,
+    review_tasks: 4,
   },
   {
     path: 'C:/work/beta',
@@ -163,6 +164,7 @@ tv.state.projects = [
     backlog_tasks: 0,
     todo_tasks: 0,
     in_progress_tasks: 1,
+    review_tasks: 0,
   },
 ];
 tv.state.loading = false;
@@ -170,11 +172,14 @@ tv.state.loading = false;
 tv.renderSidebar();
 const list = byId.get('sel:#project-list').innerHTML;
 
-// The three per-status counters of the first project, each with its dot.
+// The four per-status counters of the first project, each with its dot. The
+// counts are all distinct, so a missing counter cannot be masked by a
+// neighbouring one.
 const expected = [
   { tone: 'backlog', count: 2 },
   { tone: 'todo', count: 3 },
   { tone: 'progress', count: 1 },
+  { tone: 'review', count: 4 },
 ];
 expected.forEach(function (entry) {
   const pattern = 'rgb(var(--c-' + entry.tone + ')';
@@ -185,6 +190,28 @@ expected.forEach(function (entry) {
     failures.push('the project row lost the ' + entry.tone + ' count ' + entry.count);
   }
 });
+
+// The four counters keep the pipeline order: backlog, todo, in-progress and
+// review. A review counter that jumped in front of another one would read as
+// a different status.
+const counterOrder = ['--c-backlog', '--c-todo', '--c-progress', '--c-review'];
+let previousCounter = -1;
+counterOrder.forEach(function (tone) {
+  const at = list.indexOf('rgb(var(' + tone + ')');
+  if (at < 0) {
+    failures.push('the project row lost the ' + tone + ' counter');
+    return;
+  }
+  if (at < previousCounter) {
+    failures.push('the project row reordered the ' + tone + ' counter');
+  }
+  previousCounter = at;
+});
+
+// The review counter is muted when it is zero, like every other counter.
+if (list.indexOf('rgb(var(--c-review) / .3)') < 0) {
+  failures.push('a zero review counter is not rendered muted');
+}
 
 // The old single counter is gone: no rounded pill with the open or total
 // number next to the project name.

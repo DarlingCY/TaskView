@@ -258,7 +258,7 @@ func TestAPIEndpoints(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
 			t.Fatalf("failed to parse stats: %v", err)
 		}
-		for _, key := range []string{"total", "backlog", "todo", "in_progress", "done", "open"} {
+		for _, key := range []string{"total", "backlog", "todo", "in_progress", "review", "done", "open"} {
 			if _, ok := stats[key]; !ok {
 				t.Fatalf("missing key %s in stats", key)
 			}
@@ -798,6 +798,138 @@ func TestFiltersAndSearch(t *testing.T) {
 			})
 		}
 	}
+}
+
+// The review stage must work through both HTTP surfaces: an agent can create
+// and park a task in review, the board can filter on it, and both can move it
+// on to done.
+func TestReviewStatusOverHTTP(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+
+	var createdID string
+
+	t.Run("POST /api/agent/tasks creates a review task", func(t *testing.T) {
+		body := fmt.Sprintf(`{"title":"Review Task","status":"review","project_path":%q}`, projectPath)
+		req := testReq(http.MethodPost, "/api/agent/tasks", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var task map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if task["status"] != "review" {
+			t.Fatalf("status = %v, want review", task["status"])
+		}
+		if task["closed_at"] != nil {
+			t.Fatalf("closed_at = %v, want null for a review task", task["closed_at"])
+		}
+		createdID = task["id"].(string)
+	})
+
+	t.Run("agent filter by status=review", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks?project_path="+url.QueryEscape(projectPath)+"&status=review", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var tasks []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+			t.Fatalf("failed to parse tasks: %v", err)
+		}
+		if len(tasks) != 1 || tasks[0]["id"] != createdID {
+			t.Fatalf("unexpected filtered tasks: %v", tasks)
+		}
+	})
+
+	t.Run("board filter by status=review", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?status=review&all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var tasks []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+			t.Fatalf("failed to parse tasks: %v", err)
+		}
+		if len(tasks) != 1 || tasks[0]["id"] != createdID {
+			t.Fatalf("unexpected filtered tasks: %v", tasks)
+		}
+	})
+
+	t.Run("board stats count review tasks as open", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/stats", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var stats map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+			t.Fatalf("failed to parse stats: %v", err)
+		}
+		if stats["review"] != float64(1) {
+			t.Fatalf("review = %v, want 1", stats["review"])
+		}
+		if stats["open"] != float64(1) {
+			t.Fatalf("open = %v, want 1 - review is unfinished", stats["open"])
+		}
+		if stats["done"] != float64(0) {
+			t.Fatalf("done = %v, want 0", stats["done"])
+		}
+	})
+
+	t.Run("PATCH /api/board/tasks/:id moves review to done", func(t *testing.T) {
+		body := `{"status":"done"}`
+		req := testReq(http.MethodPatch, "/api/board/tasks/"+createdID, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var task map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatalf("failed to parse updated task: %v", err)
+		}
+		if task["status"] != "done" {
+			t.Fatalf("status = %v, want done", task["status"])
+		}
+		if task["closed_at"] == nil {
+			t.Fatal("closed_at should be set once the task is done")
+		}
+	})
+
+	t.Run("PATCH /api/agent/tasks/:id reopens a done task back to review", func(t *testing.T) {
+		body := `{"status":"review"}`
+		req := testReq(http.MethodPatch, "/api/agent/tasks/"+createdID, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var task map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatalf("failed to parse updated task: %v", err)
+		}
+		if task["status"] != "review" {
+			t.Fatalf("status = %v, want review", task["status"])
+		}
+		if task["closed_at"] != nil {
+			t.Fatalf("closed_at = %v, want null after leaving done", task["closed_at"])
+		}
+	})
 }
 
 func TestStartServerPortFallback(t *testing.T) {

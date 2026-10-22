@@ -40,13 +40,25 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 - 描述记录已确认的需求；文件行号与代码依据仅在相关且已核实时填写，不把建议写成用户已确认的决定。
 - 未实际完成并验证的修改，不要把任务标记为 `done`。
 
+### 3.1 状态流转与待审查验证
+
+状态顺序为 `backlog` → `todo` → `in_progress` → `review` → `done`，但**不强制审批流**：任何状态都可以直接设置到任何其他状态，按用户与团队的实际约定执行即可。
+
+- `in_progress`（处理中）：正在实现。
+- `review`（待审查验证）：实现已结束、等待人工或 Agent 复核的阶段。**实现工作结束而尚未验证通过时，置为 `review`**，而不是 `done`。
+- `done`（已完成）：复核通过、可以关闭时才使用，此时才会写入 `closed_at`。
+
+`review` 仍算**未完成**：它不设置 `closed_at`，会继续计入未完成统计。复核不通过时，把状态改回 `in_progress` 继续处理；复核通过后再置为 `done`。
+
+追加备注（`POST /api/agent/tasks/{id}/notes`）**不会改变状态**，也不会重置 `review`：复核记录、验证结论等一律写进备注，状态是否变化另行用 PATCH 明确设置。
+
 ### 4. 去重与更新（De-duplication）
 
 - 新建前先查询当前工程既有任务：`GET /api/agent/tasks?project_path=<工程绝对路径>`，核对是否已有同类记录。
 - 同类任务使用 `POST /api/agent/tasks/{id}/notes`（body `{"note":"…"}`）原子追加进展，避免重复创建。
 - 沟通已有任务前，读取详情并核对工程、内容和当前状态。
 - 当前沟通解决了待整理任务的关键问题后，更新 description 中的需求结论、追加沟通记录，并调用 PATCH 将 `backlog` 改为 `todo`；仅追加 notes 不会改变状态。用户明确要求继续保留待整理时，遵从其选择。
-- 仍有关键问题未解决时，保留 `backlog` 并说明具体问题。不因追加备注而重置 `in_progress` 或 `done`。
+- 仍有关键问题未解决时，保留 `backlog` 并说明具体问题。不因追加备注而重置 `in_progress`、`review` 或 `done`。
 - 根据接口实际返回核实更新结果，回复任务 ID、最终状态和剩余问题；部分操作失败时如实说明。
 - 除非用户明确要求，否则不要删除任务。
 
@@ -68,7 +80,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ```json
 {
   "success": true,
-  "version": "2.0.4"
+  "version": "2.0.5"
 }
 ```
 *(注：服务未就绪时返回 `503 Service Unavailable`，响应含 `"success": false, "error": "..."`)*
@@ -82,7 +94,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
   | 参数 | 类型 | 必填 | 说明 |
   | --- | --- | --- | --- |
   | `project_path` | string | 是 | 工程绝对路径 |
-  | `status` | string | 否 | 单个状态过滤：`backlog` \| `todo` \| `in_progress` \| `done` |
+  | `status` | string | 否 | 单个状态过滤：`backlog` \| `todo` \| `in_progress` \| `review` \| `done` |
   | `priority` | string | 否 | 单个优先级过滤：`low` \| `medium` \| `high` \| `urgent` |
 
 `status` 和 `priority` 各只允许一个值，不支持逗号分隔或重复传入同名参数，多值请求返回 `400 Bad Request`。
@@ -135,7 +147,9 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ```
 *(注：`project_path` 与 `title` 为必填字段；`project_path` 必须为绝对路径。其余字段均可选，`status` 默认 `todo`，`priority` 默认 `medium`)*
 
-字段取值：`status` = `backlog` \| `todo` \| `in_progress` \| `done`；`priority` = `low` \| `medium` \| `high` \| `urgent`。
+字段取值：`status` = `backlog` \| `todo` \| `in_progress` \| `review` \| `done`；`priority` = `low` \| `medium` \| `high` \| `urgent`。
+
+> `review`（待审查验证）是实现完成、等待复核的阶段。它**仍算未完成**（`closed_at` 保持为 `null`），只有 `done` 才会关闭任务。
 
 - **响应出参（201 Created）**：
 ```json
@@ -200,6 +214,8 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 }
 ```
 *(注：仅传入需更新的字段，支持：`title`、`status`、`priority`、`description`、`file_path`、`line_start`、`line_end`、`code_snippet`、`agent_notes`)*
+
+*(注：`status` 取 `backlog` / `todo` / `in_progress` / `review` / `done`。进入 `done` 时写入 `closed_at`；从 `done` 移到其他状态（含 `review`）时清空 `closed_at`)*
 
 - **响应出参（200 OK）**：
 ```json

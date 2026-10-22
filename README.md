@@ -55,7 +55,9 @@ $health.version   # 运行中的版本
 
 `id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`created_at`、`updated_at`、`closed_at`。
 
-- `status`：`backlog` \| `todo` \| `in_progress` \| `done`（默认 `todo`）
+- `status`：`backlog` \| `todo` \| `in_progress` \| `review` \| `done`（默认 `todo`）
+  - `review`（待审查验证）：实现已完成、等待人工或 Agent 复核的阶段。仍算**未完成**，不设置 `closed_at`。
+  - 状态之间可任意流转，不强制审批顺序；只有 `done` 会写入 `closed_at`。
 - `priority`：`low` \| `medium` \| `high` \| `urgent`（默认 `medium`）
 - `project_path` **必须是绝对路径**，相对路径直接 `400`。
 - `description` / `file_path` / `code_snippet` / `agent_notes` 为可空字段。
@@ -96,6 +98,14 @@ Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks" -ContentType 'applic
 ```powershell
 Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
     -ContentType 'application/json' -Body (@{ status = 'in_progress' } | ConvertTo-Json)
+
+# 实现完成，等待复核：置为 review（仍算未完成）
+Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
+    -ContentType 'application/json' -Body (@{ status = 'review' } | ConvertTo-Json)
+
+# 验证通过后才关闭
+Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
+    -ContentType 'application/json' -Body (@{ status = 'done' } | ConvertTo-Json)
 
 # 原子追加，不覆盖既有备注
 Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/notes" `

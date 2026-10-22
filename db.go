@@ -29,8 +29,13 @@ import (
 )
 
 // Valid values for Task.Status and ListOptions.Status.
+//
+// The order is the lifecycle order: a task is prepared (backlog), committed
+// (todo), worked on (in_progress), handed over for verification (review) and
+// only then closed (done). The order is documentation only - every status can
+// be set from every other one, there is no mandatory approval flow.
 var (
-	Statuses   = []string{"backlog", "todo", "in_progress", "done"}
+	Statuses   = []string{"backlog", "todo", "in_progress", "review", "done"}
 	Priorities = []string{"low", "medium", "high", "urgent"}
 )
 
@@ -120,6 +125,7 @@ type Project struct {
 	BacklogTasks    int64  `json:"backlog_tasks"`
 	TodoTasks       int64  `json:"todo_tasks"`
 	InProgressTasks int64  `json:"in_progress_tasks"`
+	ReviewTasks     int64  `json:"review_tasks"`
 	UpdatedAt       int64  `json:"updated_at"`
 }
 
@@ -129,6 +135,7 @@ type Stats struct {
 	Backlog     int64   `json:"backlog"`
 	Todo        int64   `json:"todo"`
 	InProgress  int64   `json:"in_progress"`
+	Review      int64   `json:"review"`
 	Done        int64   `json:"done"`
 	Open        int64   `json:"open"`
 	Projects    int64   `json:"projects"`
@@ -1016,6 +1023,7 @@ func (s *Store) GetProjects() ([]Project, error) {
 		       SUM(CASE WHEN status = 'backlog' THEN 1 ELSE 0 END) AS backlog_tasks,
 		       SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_tasks,
 		       SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_tasks,
+		       SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END) AS review_tasks,
 		       MAX(updated_at) AS updated_at
 		FROM tasks
 		GROUP BY project_path, project_name
@@ -1029,7 +1037,7 @@ func (s *Store) GetProjects() ([]Project, error) {
 	for rows.Next() {
 		var p Project
 		if err := rows.Scan(&p.Path, &p.Name, &p.TotalTasks, &p.OpenTasks,
-			&p.BacklogTasks, &p.TodoTasks, &p.InProgressTasks, &p.UpdatedAt); err != nil {
+			&p.BacklogTasks, &p.TodoTasks, &p.InProgressTasks, &p.ReviewTasks, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("get projects: %w", err)
 		}
 		projects = append(projects, p)
@@ -1082,6 +1090,7 @@ func (s *Store) GetStats(projectPath string) (Stats, error) {
 		SUM(CASE WHEN status = 'backlog' THEN 1 ELSE 0 END) AS backlog,
 		SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo,
 		SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
+		SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END) AS review,
 		SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
 		COUNT(DISTINCT project_path) AS projects
 		FROM tasks`
@@ -1097,9 +1106,9 @@ func (s *Store) GetStats(projectPath string) (Stats, error) {
 		args = append(args, resolved)
 	}
 
-	var total, backlog, todo, inProgress, done, projects sql.NullInt64
+	var total, backlog, todo, inProgress, review, done, projects sql.NullInt64
 	if err := db.QueryRow(query, args...).Scan(
-		&total, &backlog, &todo, &inProgress, &done, &projects,
+		&total, &backlog, &todo, &inProgress, &review, &done, &projects,
 	); err != nil {
 		return Stats{}, fmt.Errorf("get stats: %w", err)
 	}
@@ -1111,6 +1120,7 @@ func (s *Store) GetStats(projectPath string) (Stats, error) {
 		Backlog:     backlog.Int64,
 		Todo:        todo.Int64,
 		InProgress:  inProgress.Int64,
+		Review:      review.Int64,
 		Done:        d,
 		Open:        t - d,
 		Projects:    projects.Int64,
@@ -1121,8 +1131,9 @@ func (s *Store) GetStats(projectPath string) (Stats, error) {
 // ----------------------------------------------------------------- update --
 
 // UpdateTask applies fields to the task with the given id. Unknown keys are
-// ignored; passing no recognised field is a validation error. Moving to or from
-// "done" maintains closed_at. Returns (nil, nil) when the task does not exist.
+// ignored; passing no recognised field is a validation error. Entering "done"
+// sets closed_at; leaving "done" clears it. Other transitions leave it alone.
+// Returns (nil, nil) when the task does not exist.
 func (s *Store) UpdateTask(id string, fields map[string]any) (*Task, error) {
 	db, err := s.conn()
 	if err != nil {
