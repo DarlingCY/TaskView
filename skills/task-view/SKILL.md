@@ -17,6 +17,12 @@ TaskView 用于记录项目任务、澄清需求、更新状态和追加进展�
 
 Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/agent/health`（`200` 且 `success:true`）。健康检查失败说明服务未运行，提示用户启动已安装的应用（托盘图标或开始菜单 `TaskView`）；用户需要查看看板时，提示其通过托盘打开。
 
+### 请求工具与编码
+
+- 优先使用跨平台 HTTP 请求工具 `curl`。较新的 Windows 与 macOS 通常自带，Linux 精简系统或容器不一定安装；调用前检查可用性，缺失时使用宿主已有的 HTTP 工具或提示用户，不擅自安装。
+- Windows PowerShell 中显式使用 `curl.exe`，避免 Windows PowerShell 5.1 的 `curl` 别名被解析为 `Invoke-WebRequest`；Bash、Linux 与 macOS 中使用 `curl`。
+- JSON 请求体直接作为文本参数通过 `curl --data-raw` 发送，并设置 `Content-Type: application/json; charset=utf-8`。不创建临时文件，不使用文件路径或标准输入；按当前 Shell 的编码、引用与转义规则传参，确保实际传输为 UTF-8，且 JSON 中的 Windows 路径反斜杠正确转义。
+
 ### 2. 工程作用域（Project Scope）
 
 - `project_path` **必须是绝对路径**，相对路径会被接口拒绝（`400`）。
