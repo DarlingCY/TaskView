@@ -67,6 +67,10 @@ check(
   /\bml-auto\b/.test(searchClasses),
   'the action cluster is no longer pushed to the right (ml-auto)'
 );
+check(
+  !/\blg:ml-/.test(searchClasses),
+  'the search field has an lg:ml-* margin that overrides ml-auto on desktop screens'
+);
 
 // Every control of the cluster is still present and in the documented order.
 const order = [

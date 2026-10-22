@@ -53,7 +53,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ```json
 {
   "success": true,
-  "version": "2.0.2"
+  "version": "2.0.4"
 }
 ```
 *(注：服务未就绪时返回 `503 Service Unavailable`，响应含 `"success": false, "error": "..."`)*

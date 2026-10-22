@@ -209,9 +209,14 @@ check(card.indexOf('data-act="advance"') >= 0, 'board card lost the advance acti
 check(card.indexOf('data-act="edit"') >= 0, 'board card lost the edit action');
 check(card.indexOf('data-act="delete"') >= 0, 'board card lost the delete action');
 
-// A card without a file path or notes must render exactly the same way, so
-// the removed blocks leave no empty spacing behind: the description slot is
-// skipped and the card ends straight with the meta row.
+// The title sits in the top header row with truncation so it never covers
+// the project name. The task ID sits at the bottom, to the left of the time.
+check(card.indexOf('<h3 class="min-w-0 flex-1 truncate') >= 0, 'title is not in the top row with truncation');
+check(card.indexOf('card-project card-sub shrink-0') >= 0, 'project name is not shrink-0 in the top row');
+check(card.indexOf('justify-between gap-1.5') >= 0, 'bottom row is not justify-between');
+
+// A card without a description skips the description slot and ends straight
+// with the bottom meta row.
 const bareCard = tv.cardHtml({
   id: 'T202610220003',
   title: '没有上下文的卡片',
@@ -219,7 +224,7 @@ const bareCard = tv.cardHtml({
   priority: 'medium',
   updated_at: 1700000000000,
 }, 1);
-check(bareCard.indexOf('</h3><div class="mt-2.5 flex items-center gap-1.5">') >= 0, 'board card grew an empty spacing slot');
+check(bareCard.indexOf('</div><div class="mt-2.5 flex items-center justify-between gap-1.5">') >= 0, 'board card grew an empty spacing slot');
 check(bareCard.indexOf('智能体洞察') < 0, 'board card renders an agent insight without notes');
 
 // ---------------------------------------------------------- list view

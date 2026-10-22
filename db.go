@@ -113,11 +113,14 @@ type Task struct {
 
 // Project is a per-project aggregate used by the projects view.
 type Project struct {
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	TotalTasks int64  `json:"total_tasks"`
-	OpenTasks  int64  `json:"open_tasks"`
-	UpdatedAt  int64  `json:"updated_at"`
+	Path            string `json:"path"`
+	Name            string `json:"name"`
+	TotalTasks      int64  `json:"total_tasks"`
+	OpenTasks       int64  `json:"open_tasks"`
+	BacklogTasks    int64  `json:"backlog_tasks"`
+	TodoTasks       int64  `json:"todo_tasks"`
+	InProgressTasks int64  `json:"in_progress_tasks"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // Stats holds status bucket counts, optionally scoped to one project.
@@ -1010,6 +1013,9 @@ func (s *Store) GetProjects() ([]Project, error) {
 		       project_name AS name,
 		       COUNT(*) AS total_tasks,
 		       SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END) AS open_tasks,
+		       SUM(CASE WHEN status = 'backlog' THEN 1 ELSE 0 END) AS backlog_tasks,
+		       SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_tasks,
+		       SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_tasks,
 		       MAX(updated_at) AS updated_at
 		FROM tasks
 		GROUP BY project_path, project_name
@@ -1022,7 +1028,8 @@ func (s *Store) GetProjects() ([]Project, error) {
 	projects := []Project{}
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.Path, &p.Name, &p.TotalTasks, &p.OpenTasks, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Path, &p.Name, &p.TotalTasks, &p.OpenTasks,
+			&p.BacklogTasks, &p.TodoTasks, &p.InProgressTasks, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("get projects: %w", err)
 		}
 		projects = append(projects, p)

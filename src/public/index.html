@@ -7,9 +7,6 @@
 <meta name="description" content="TaskView — 面向 AI 智能体开发者的个人任务与优化追踪工具。" />
 <meta name="color-scheme" content="dark light" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M16 6.5l2.4 6.9 6.9 2.4-6.9 2.4-2.4 6.9-2.4-6.9L6.7 15.8l6.9-2.4z' fill='white'/%3E%3C/svg%3E" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -17,10 +14,12 @@
     darkMode: 'class',
     theme: {
       extend: {
+        // The system fonts only: no web font is fetched, so the board opens
+        // instantly and works offline.
         fontFamily: {
-          display: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-          sans: ['Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-          mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          display: ['system-ui', '-apple-system', '"Segoe UI"', '"Microsoft YaHei"', 'sans-serif'],
+          sans: ['system-ui', '-apple-system', '"Segoe UI"', '"Microsoft YaHei"', 'sans-serif'],
+          mono: ['ui-monospace', 'Consolas', '"Cascadia Mono"', 'Menlo', 'monospace'],
         },
         // Tailwind's default weight scale skips 500/600/700 as named utilities.
         fontWeight: {
@@ -526,7 +525,7 @@
       </div>
 
       <!-- search -->
-      <div class="group relative ml-auto min-w-0 flex-1 md:w-[240px] md:flex-none lg:ml-4">
+      <div class="group relative ml-auto min-w-0 flex-1 md:w-[240px] md:flex-none">
         <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink3 transition-colors group-focus-within:text-brand" data-icon="search"></span>
         <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="搜索任务、笔记、文件…"
                class="field !py-[7px] !pl-8 !pr-9" aria-label="搜索任务" />
@@ -1433,6 +1432,30 @@
   }
 
   /* ----------------------------------------------------------------- sidebar */
+
+  // PROJECT_STATUS_COUNTS maps the per-status counters of a project to the
+  // tone of the matching status. The dot next to the number uses that tone.
+  const PROJECT_STATUS_COUNTS = [
+    { key: 'backlog_tasks', status: 'backlog' },
+    { key: 'todo_tasks', status: 'todo' },
+    { key: 'in_progress_tasks', status: 'in_progress' },
+  ];
+
+  // statusCountDots renders the per-status counters of a project as a
+  // compact row of coloured dots with their numbers. Counters of zero stay
+  // visible but muted, so the row does not jump when a status empties.
+  function statusCountDots(project) {
+    const cells = PROJECT_STATUS_COUNTS.map(function (entry) {
+      const count = Number(project[entry.key]) || 0;
+      const tone = STATUS_META[entry.status].tone;
+      return '<span class="flex items-center gap-1" title="' + STATUS_META[entry.status].label + '：' + count + '">' +
+          '<span class="h-1.5 w-1.5 shrink-0 rounded-full" style="background:rgb(var(--c-' + tone + ') / ' + (count > 0 ? '1' : '.3') + ')"></span>' +
+          '<span class="text-[10px] tabular-nums ' + (count > 0 ? 'text-ink2' : 'text-ink3') + '">' + count + '</span>' +
+        '</span>';
+    });
+    return '<span class="flex shrink-0 items-center gap-2">' + cells.join('') + '</span>';
+  }
+
   function renderSidebar() {
     // projects
     const grandTotal = state.projects.reduce(function (sum, p) { return sum + (Number(p.total_tasks) || 0); }, 0);
@@ -1447,15 +1470,11 @@
 
     state.projects.forEach(function (project) {
       const active = state.projectPath === project.path;
-      const open = Number(project.open_tasks) || 0;
-      const total = Number(project.total_tasks) || 0;
       html +=
         '<button class="nav-row' + (active ? ' is-active' : '') + '" data-act="select-project" data-project="' + attr(project.path) + '" title="' + attr(project.path) + '">' +
           '<span class="dot" style="background:' + (active ? 'rgb(var(--c-brand))' : 'rgb(var(--c-ink-3) / .45)') + '"></span>' +
           '<span class="flex-1 truncate">' + esc(project.name) + '</span>' +
-          (open > 0
-            ? '<span class="rounded-full px-1.5 py-[1px] text-[10px] font-600 tabular-nums ' + (active ? 'bg-brand/20 text-brand' : 'bg-surface3 text-ink2') + '">' + open + '</span>'
-            : '<span class="text-[10px] tabular-nums text-ink3">' + total + '</span>') +
+          statusCountDots(project) +
         '</button>';
     });
     if (!state.projects.length && !state.loading) {
@@ -1566,9 +1585,9 @@
     return '' +
       '<article class="task-card group p-3 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
         'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title + ' · ' + meta.label + ' · ' + priorityMeta.label + '优先级') + '">' +
-        '<div class="relative mb-1 flex h-6 items-center gap-1.5">' +
-          '<span class="card-sub shrink-0 font-mono text-[10.5px] font-500 tabular-nums tracking-[.02em] text-ink2" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
-          '<span class="card-project card-sub ml-auto min-w-0 truncate text-right text-[11px] font-500 text-ink2" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
+        '<div class="relative mb-1 flex h-6 items-center gap-2">' +
+          '<h3 class="min-w-0 flex-1 truncate text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '" title="' + attr(task.title) + '">' + esc(task.title) + '</h3>' +
+          '<span class="card-project card-sub shrink-0 max-w-[40%] truncate text-right text-[11px] font-500 text-ink2" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
           '<span class="card-actions absolute right-0 top-0 flex h-6 items-center gap-0.5">' +
             '<button data-act="advance" tabindex="-1" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
               'class="icon-btn h-6 w-6" style="color:rgb(var(--c-' + nextMeta.tone + '))">' + icon(next === 'done' ? 'check' : 'arrowRight', 'h-3.5 w-3.5') + '</button>' +
@@ -1577,14 +1596,13 @@
           '</span>' +
         '</div>' +
 
-        '<h3 class="mb-1.5 text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '">' + esc(task.title) + '</h3>' +
-
         (task.description
-          ? '<p class="card-sub mt-1.5 text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
+          ? '<p class="card-sub mt-1 text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
           : '') +
 
-        '<div class="mt-2.5 flex items-center gap-1.5">' +
-          '<span class="card-sub ml-auto shrink-0 text-[10px] tabular-nums text-ink2">' + relativeTime(task.updated_at) + '</span>' +
+        '<div class="mt-2.5 flex items-center justify-between gap-1.5">' +
+          '<span class="card-sub shrink-0 font-mono text-[10.5px] font-500 tabular-nums tracking-[.02em] text-ink3" title="任务 ID：' + attr(task.id) + '">' + esc(task.id) + '</span>' +
+          '<span class="card-sub shrink-0 text-[10px] tabular-nums text-ink2">' + relativeTime(task.updated_at) + '</span>' +
         '</div>' +
       '</article>';
   }

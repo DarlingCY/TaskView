@@ -1381,8 +1381,8 @@ func TestGetProjects(t *testing.T) {
 	alphaPath := t.TempDir()
 	betaPath := t.TempDir()
 
-	create(t, store, map[string]any{"title": "A1", "project_path": alphaPath, "project_name": "alpha"})
-	create(t, store, map[string]any{"title": "A2", "project_path": alphaPath, "project_name": "alpha"})
+	create(t, store, map[string]any{"title": "A1", "project_path": alphaPath, "project_name": "alpha", "status": "backlog"})
+	create(t, store, map[string]any{"title": "A2", "project_path": alphaPath, "project_name": "alpha", "status": "in_progress"})
 	create(t, store, map[string]any{"title": "B1", "project_path": betaPath, "project_name": "beta", "status": "done"})
 
 	projects, err := store.GetProjects()
@@ -1400,6 +1400,9 @@ func TestGetProjects(t *testing.T) {
 	if alpha.TotalTasks != 2 || alpha.OpenTasks != 2 {
 		t.Errorf("alpha counts = %+v, want total 2 open 2", alpha)
 	}
+	if alpha.BacklogTasks != 1 || alpha.TodoTasks != 0 || alpha.InProgressTasks != 1 {
+		t.Errorf("alpha status counts = %+v, want backlog 1 todo 0 in_progress 1", alpha)
+	}
 	if alpha.UpdatedAt <= 0 {
 		t.Errorf("alpha.UpdatedAt = %d, want > 0", alpha.UpdatedAt)
 	}
@@ -1409,6 +1412,9 @@ func TestGetProjects(t *testing.T) {
 	}
 	if beta.OpenTasks != 0 {
 		t.Errorf("beta.OpenTasks = %d, want 0", beta.OpenTasks)
+	}
+	if beta.BacklogTasks != 0 || beta.TodoTasks != 0 || beta.InProgressTasks != 0 {
+		t.Errorf("beta status counts = %+v, want all zero", beta)
 	}
 }
 
@@ -1513,7 +1519,7 @@ func TestProjectAndStatsJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal project: %v", err)
 	}
-	want := `{"path":"/p","name":"n","total_tasks":2,"open_tasks":1,"updated_at":99}`
+	want := `{"path":"/p","name":"n","total_tasks":2,"open_tasks":1,"backlog_tasks":0,"todo_tasks":0,"in_progress_tasks":0,"updated_at":99}`
 	if string(project) != want {
 		t.Errorf("project JSON = %s, want %s", project, want)
 	}
