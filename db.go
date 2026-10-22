@@ -99,21 +99,22 @@ type Store struct {
 // omitted, which keeps the SPA's rendering stable. List-valued columns are
 // always []string in JSON (empty, never null) for the same reason.
 type Task struct {
-	ID          string  `json:"id"`
-	ProjectPath string  `json:"project_path"`
-	ProjectName string  `json:"project_name"`
-	Title       string  `json:"title"`
-	Status      string  `json:"status"`
-	Priority    string  `json:"priority"`
-	Description *string `json:"description"`
-	FilePath    *string `json:"file_path"`
-	CodeSnippet *string `json:"code_snippet"`
-	AgentNotes  *string `json:"agent_notes"`
-	LineStart   *int64  `json:"line_start"`
-	LineEnd     *int64  `json:"line_end"`
-	CreatedAt   int64   `json:"created_at"`
-	UpdatedAt   int64   `json:"updated_at"`
-	ClosedAt    *int64  `json:"closed_at"`
+	ID              string  `json:"id"`
+	ProjectPath     string  `json:"project_path"`
+	ProjectName     string  `json:"project_name"`
+	Title           string  `json:"title"`
+	Status          string  `json:"status"`
+	Priority        string  `json:"priority"`
+	Description     *string `json:"description"`
+	FilePath        *string `json:"file_path"`
+	CodeSnippet     *string `json:"code_snippet"`
+	AgentNotes      *string `json:"agent_notes"`
+	LineStart       *int64  `json:"line_start"`
+	LineEnd         *int64  `json:"line_end"`
+	RejectionReason *string `json:"rejection_reason"`
+	CreatedAt       int64   `json:"created_at"`
+	UpdatedAt       int64   `json:"updated_at"`
+	ClosedAt        *int64  `json:"closed_at"`
 }
 
 // Project is a per-project aggregate used by the projects view.
@@ -170,6 +171,7 @@ const taskTableBody = `
   line_end      INTEGER,
   code_snippet  TEXT,
   agent_notes   TEXT,
+  rejection_reason TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   closed_at     INTEGER
@@ -180,6 +182,7 @@ const taskTableBody = `
 // on the new table.
 var taskIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_tasks_project_path ON tasks(project_path)",
+	"CREATE INDEX IF NOT EXISTS idx_tasks_lower_proj_status ON tasks(LOWER(project_path), status)",
 	"CREATE INDEX IF NOT EXISTS idx_tasks_status        ON tasks(status)",
 	"CREATE INDEX IF NOT EXISTS idx_tasks_created_at    ON tasks(created_at)",
 	"CREATE INDEX IF NOT EXISTS idx_tasks_updated_at    ON tasks(updated_at)",
@@ -377,6 +380,10 @@ func OpenStore(filename string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialise schema: %w", err)
 	}
+	if err := migrateAddRejectionReasonColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	// A database created before tags were retired still carries the column; the
 	// migration rebuilds the table without it. On an already-migrated database
 	// this is a cheap no-op.
@@ -449,6 +456,22 @@ func migrateDropTagsColumn(db *sql.DB) error {
 		return fmt.Errorf("commit tags migration: %w", err)
 	}
 	committed = true
+	return nil
+}
+
+// migrateAddRejectionReasonColumn adds rejection_reason to existing databases
+// created before this column existed.
+func migrateAddRejectionReasonColumn(db *sql.DB) error {
+	has, err := tableHasColumn(db, "tasks", "rejection_reason")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec("ALTER TABLE tasks ADD COLUMN rejection_reason TEXT;"); err != nil {
+		return fmt.Errorf("add rejection_reason column: %w", err)
+	}
 	return nil
 }
 
@@ -837,7 +860,7 @@ func (s *Store) CreateTask(data map[string]any) (*Task, error) {
 
 const taskColumns = `id, project_path, project_name, title, description, status, priority,
 	file_path, line_start, line_end, code_snippet, agent_notes,
-	created_at, updated_at, closed_at`
+	rejection_reason, created_at, updated_at, closed_at`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -848,6 +871,7 @@ func scanTask(row scanner) (*Task, error) {
 		task                    Task
 		description, filePath   sql.NullString
 		codeSnippet, agentNotes sql.NullString
+		rejectionReason         sql.NullString
 		lineStart, lineEnd      sql.NullInt64
 		closedAt                sql.NullInt64
 	)
@@ -855,7 +879,7 @@ func scanTask(row scanner) (*Task, error) {
 		&task.ID, &task.ProjectPath, &task.ProjectName, &task.Title,
 		&description, &task.Status, &task.Priority,
 		&filePath, &lineStart, &lineEnd, &codeSnippet, &agentNotes,
-		&task.CreatedAt, &task.UpdatedAt, &closedAt,
+		&rejectionReason, &task.CreatedAt, &task.UpdatedAt, &closedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -865,6 +889,7 @@ func scanTask(row scanner) (*Task, error) {
 	task.FilePath = nullString(filePath)
 	task.CodeSnippet = nullString(codeSnippet)
 	task.AgentNotes = nullString(agentNotes)
+	task.RejectionReason = nullString(rejectionReason)
 	task.LineStart = nullInt(lineStart)
 	task.LineEnd = nullInt(lineEnd)
 	task.ClosedAt = nullInt(closedAt)
@@ -1286,6 +1311,10 @@ func (s *Store) UpdateTask(id string, fields map[string]any) (*Task, error) {
 		args = append(args, nil)
 	}
 
+	if nextStatus != nil && (*nextStatus == "review" || *nextStatus == "done") {
+		sets = append(sets, "rejection_reason = NULL")
+	}
+
 	args = append(args, id)
 	if _, err := db.Exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 		return nil, fmt.Errorf("update task %q: %w", id, err)
@@ -1345,6 +1374,67 @@ func (s *Store) AppendNotes(id, note string) (*Task, error) {
 	if affected == 0 {
 		return nil, nil
 	}
+	return s.GetTask(id)
+}
+
+// RejectTask transitions a task backwards with a mandatory rejection reason:
+// - review -> in_progress
+// - in_progress -> backlog
+// - todo -> backlog
+// Calling RejectTask on backlog or done returns a validation error.
+func (s *Store) RejectTask(id, reason string) (*Task, error) {
+	db, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+
+	trimmedReason := strings.TrimSpace(reason)
+	if trimmedReason == "" {
+		return nil, newValidationError("rejection reason is required")
+	}
+
+	existing, err := s.GetTask(id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, nil
+	}
+
+	var targetStatus string
+	switch existing.Status {
+	case "review":
+		targetStatus = "in_progress"
+	case "in_progress":
+		targetStatus = "backlog"
+	case "todo":
+		targetStatus = "backlog"
+	case "backlog":
+		return nil, newValidationError("task %s is already in backlog and cannot be rejected", id)
+	case "done":
+		return nil, newValidationError("task %s is done and cannot be rejected", id)
+	default:
+		return nil, newValidationError("cannot reject task %s with status %s", id, existing.Status)
+	}
+
+	ts := time.Now().UnixMilli()
+	res, err := db.Exec(`
+		UPDATE tasks
+		SET status = ?,
+		    rejection_reason = ?,
+		    updated_at = ?
+		WHERE id = ?`, targetStatus, trimmedReason, ts, id)
+	if err != nil {
+		return nil, fmt.Errorf("reject task %q: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("reject task %q: %w", id, err)
+	}
+	if affected == 0 {
+		return nil, nil
+	}
+
 	return s.GetTask(id)
 }
 

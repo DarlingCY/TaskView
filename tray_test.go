@@ -241,6 +241,80 @@ func TestTrayControllerRunsUpdateCheckInBackgroundOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestTrayControllerRunsUpdateCheckWithoutASharedDeadline proves that the
+// tray does not put one deadline over the whole update.
+//
+// The update divides itself into phases and gives every phase its own
+// budget. A deadline in the tray would spend that budget while the user is
+// still reading the confirmation prompt, and the download would fail with
+// "context deadline exceeded" before it even started.
+func TestTrayControllerRunsUpdateCheckWithoutASharedDeadline(t *testing.T) {
+	rec := &notificationRecorder{}
+	ctl, _, _ := testController(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctl.opts.Context = ctx
+
+	deadlineSeen := make(chan time.Time, 1)
+	ctl.opts.CheckUpdate = func(checkCtx context.Context) error {
+		deadline, ok := checkCtx.Deadline()
+		if !ok {
+			deadlineSeen <- time.Time{}
+			return nil
+		}
+		deadlineSeen <- deadline
+		return nil
+	}
+
+	ctl.checkForUpdate()
+
+	select {
+	case deadline := <-deadlineSeen:
+		if !deadline.IsZero() {
+			t.Fatalf("the update runs under the deadline %s, want no deadline of its own", deadline)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the update was never started")
+	}
+}
+
+// TestTrayControllerCancelsTheUpdateOnShutdown proves that the update is
+// bound to the lifetime of the tray, so shutting TaskView down cancels a
+// check that is still running.
+func TestTrayControllerCancelsTheUpdateOnShutdown(t *testing.T) {
+	rec := &notificationRecorder{}
+	ctl, _, _ := testController(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctl.opts.Context = ctx
+
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	ctl.opts.CheckUpdate = func(checkCtx context.Context) error {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-checkCtx.Done()
+		select {
+		case cancelled <- struct{}{}:
+		default:
+		}
+		return checkCtx.Err()
+	}
+
+	ctl.checkForUpdate()
+	<-started
+	cancel()
+
+	select {
+	case <-cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the running update was not cancelled by the shutdown")
+	}
+}
+
 // TestTrayControllerReportsUpdateFailure proves that a failing check reaches
 // the user.
 func TestTrayControllerReportsUpdateFailure(t *testing.T) {

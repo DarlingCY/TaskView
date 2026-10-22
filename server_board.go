@@ -289,9 +289,58 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 	// /api/board/tasks/...
 	if strings.HasPrefix(relPath, "/tasks/") {
 		idPart := strings.TrimPrefix(relPath, "/tasks/")
+		sub := ""
+		if slash := strings.Index(idPart, "/"); slash >= 0 {
+			idPart, sub = idPart[:slash], idPart[slash+1:]
+		}
 		id, unescapeErr := url.PathUnescape(idPart)
 		if unescapeErr != nil || id == "" || strings.Contains(id, "/") {
 			boardSendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", idPart))
+			return
+		}
+
+		// POST /api/board/tasks/{id}/reject
+		if sub == "reject" {
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				boardSendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
+				return
+			}
+			body, err := boardReadJSONBody(r)
+			if err != nil {
+				boardSendError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			reason, ok := body["reason"].(string)
+			if !ok {
+				boardSendError(w, http.StatusBadRequest, "reason is required and must be a string")
+				return
+			}
+			reason = strings.TrimSpace(reason)
+			if reason == "" {
+				boardSendError(w, http.StatusBadRequest, "reason must not be empty")
+				return
+			}
+
+			updated, err := store.RejectTask(id, reason)
+			if err != nil {
+				if IsValidationError(err) {
+					boardSendError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				boardSendError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if updated == nil {
+				boardSendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", id))
+				return
+			}
+			boardSendJSON(w, http.StatusOK, updated)
+			return
+		}
+
+		if sub != "" {
+			boardSendError(w, http.StatusNotFound, fmt.Sprintf("Unknown API endpoint: %s", cleanPath))
 			return
 		}
 

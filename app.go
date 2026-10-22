@@ -176,34 +176,105 @@ func runApplication(args []string) error {
 	return nil
 }
 
-func checkForApplicationUpdate(ctx context.Context) error {
-	u := NewUpdater()
-	release, err := u.Check(ctx)
+// The update runs in three phases, and every phase gets its own budget.
+//
+// The phases used to share a single deadline, so a user who left the
+// confirmation prompt open for a few minutes saw the download fail with
+// "context deadline exceeded" before it even started.
+//
+// They are variables so that tests can lower them instead of waiting for
+// them.
+var (
+	// updateMetadataTimeout bounds the release metadata check.
+	updateMetadataTimeout = 30 * time.Second
+	// updateDownloadTimeout bounds the download of the installer and its
+	// verification.
+	updateDownloadTimeout = 20 * time.Minute
+)
+
+// updateFlow drives an update from the release check to the installer.
+//
+// The side effects are fields rather than direct calls, so a test can drive
+// the whole flow without a message box, a network or an installer.
+type updateFlow struct {
+	// check asks the release API for a newer version.
+	check func(context.Context) (*UpdateRelease, error)
+	// download fetches the installer of a release and verifies it.
+	download func(context.Context, *UpdateRelease) (string, func(), error)
+	// confirm asks the user whether to continue.
+	confirm func(title, message string) bool
+	// notify reports a result to the user.
+	notify func(title, message string)
+	// launch starts the verified installer.
+	launch func(context.Context, string) error
+	// legacyPending reports a leftover installation of the previous version.
+	legacyPending func() (bool, error)
+	// currentVersion is the version of the running build.
+	currentVersion string
+}
+
+// run performs the update.
+//
+// The three phases are bounded separately: the metadata check is a short
+// network call, the confirmation is the user's time and the download is a
+// long transfer. A slow answer to the prompt therefore never shortens the
+// download.
+func (f *updateFlow) run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Phase 1: the metadata check gets its own short budget, so a slow
+	// server cannot hold the flow up for long.
+	ctxCheck, cancelCheck := context.WithTimeout(ctx, updateMetadataTimeout)
+	release, err := f.check(ctxCheck)
+	cancelCheck()
 	if errors.Is(err, ErrNoRelease) {
-		platformNotify("TaskView 更新", "暂无正式发布版本。")
+		f.report("TaskView 更新", "暂无正式发布版本。")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	if release == nil {
-		platformNotify("TaskView 更新", "当前已是最新版本。")
+		f.report("TaskView 更新", "当前已是最新版本。")
 		return nil
 	}
 	// A silent installer stops at the migrate step for a legacy installation
 	// and would fail without any visible result. Refuse up front instead.
-	if pending, err := legacyInstallationPending(); err == nil && pending {
-		platformNotify("TaskView 更新", "检测到旧版 TaskView 的残留安装（便携版或旧版开机自启）。\n\n自动更新不会替你迁移旧版：请先卸载旧版本，再手动运行安装程序完成升级。任务数据不会受影响。")
+	if f.legacyPending != nil {
+		if pending, err := f.legacyPending(); err == nil && pending {
+			f.report("TaskView 更新", "检测到旧版 TaskView 的残留安装（便携版或旧版开机自启）。\n\n自动更新不会替你迁移旧版：请先卸载旧版本，再手动运行安装程序完成升级。任务数据不会受影响。")
+			return nil
+		}
+	}
+
+	// Phase 2: the confirmation belongs to the user. It waits for as long as
+	// it takes and consumes no network budget; only the shutdown of the
+	// application ends it.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !f.confirm("TaskView 更新", fmt.Sprintf("当前版本：%s\n新版本：%s\n\n下载校验后将运行升级安装程序，暂时关闭并重启 TaskView。任务数据和自启设置保留。\n是否继续？", f.currentVersion, release.Version)) {
 		return nil
 	}
-	if !platformConfirm("TaskView 更新", fmt.Sprintf("当前版本：%s\n新版本：%s\n\n下载校验后将运行升级安装程序，暂时关闭并重启 TaskView。任务数据和自启设置保留。\n是否继续？", appVersion(), release.Version)) {
-		return nil
+	// The application may have shut down while the prompt was open.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	installer, cleanup, err := u.Download(ctx, release)
+
+	// Phase 3: the download starts with a fresh budget of its own, no matter
+	// how long the confirmation took.
+	ctxDownload, cancelDownload := context.WithTimeout(ctx, updateDownloadTimeout)
+	defer cancelDownload()
+	installer, cleanup, err := f.download(ctxDownload, release)
 	if err != nil {
 		return err
 	}
-	if err = launchUpdateInstaller(ctx, installer); err != nil {
+	// The installer is started under the root context: the download budget
+	// bounds the transfer, not the moment the verified installer is handed
+	// over.
+	if err = f.launch(ctx, installer); err != nil {
 		cleanup()
 		return err
 	}
@@ -211,6 +282,32 @@ func checkForApplicationUpdate(ctx context.Context) error {
 	// the upgrade stops TaskView and this goroutine dies with it. Stale staging
 	// directories are therefore collected on the next start instead of here.
 	return nil
+}
+
+// report shows a message to the user, if there is a way to show it.
+func (f *updateFlow) report(title, message string) {
+	if f.notify != nil {
+		f.notify(title, message)
+	}
+}
+
+// checkForApplicationUpdate looks for a newer release and, once the user
+// confirmed it, downloads the installer and starts it.
+//
+// The phases have separate deadlines, so the time the user spends on the
+// confirmation prompt never eats into the download.
+func checkForApplicationUpdate(ctx context.Context) error {
+	u := NewUpdater()
+	flow := &updateFlow{
+		check:          u.Check,
+		download:       u.Download,
+		confirm:        platformConfirm,
+		notify:         platformNotify,
+		launch:         launchUpdateInstaller,
+		legacyPending:  legacyInstallationPending,
+		currentVersion: appVersion(),
+	}
+	return flow.run(ctx)
 }
 
 // cleanupStaleUpdateStaging removes leftover download directories from earlier

@@ -142,6 +142,23 @@ func TestStaticServingAndHEAD(t *testing.T) {
 			t.Fatalf("expected Allow header, got %s", rec.Header().Get("Allow"))
 		}
 	})
+
+	t.Run("serves embedded precompiled tailwind.min.css via default getPublicFS", func(t *testing.T) {
+		defaultHandler := CreateApp(store, nil)
+		req := testReq(http.MethodGet, "/tailwind.min.css", nil)
+		rec := httptest.NewRecorder()
+		defaultHandler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for embedded tailwind.min.css, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "text/css") {
+			t.Fatalf("expected text/css, got %s", rec.Header().Get("Content-Type"))
+		}
+		if rec.Body.Len() < 5000 {
+			t.Fatalf("embedded tailwind.min.css is unexpectedly small: %d bytes", rec.Body.Len())
+		}
+	})
 }
 
 func TestSecurityAndHostOrigin(t *testing.T) {
@@ -1291,5 +1308,167 @@ func TestAppendNotesEndpoint(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 for GET, got %d", rec.Code)
+	}
+}
+
+// TestRejectEndpoint covers POST /api/agent/tasks/{id}/reject and POST /api/board/tasks/{id}/reject
+func TestRejectEndpoint(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+
+	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
+		prefix := prefix
+		t.Run(prefix+" reject review to in_progress", func(t *testing.T) {
+			task, err := store.CreateTask(map[string]any{"title": "Review task", "status": "review", "project_path": projectPath})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			req := testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{"reason":"Bug in logic"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var res map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("failed to parse json: %v", err)
+			}
+			if res["status"] != "in_progress" {
+				t.Errorf("status = %v, want in_progress", res["status"])
+			}
+			if res["rejection_reason"] != "Bug in logic" {
+				t.Errorf("rejection_reason = %v, want 'Bug in logic'", res["rejection_reason"])
+			}
+		})
+
+		t.Run(prefix+" reject in_progress to backlog", func(t *testing.T) {
+			task, err := store.CreateTask(map[string]any{"title": "InProgress task", "status": "in_progress", "project_path": projectPath})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			req := testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{"reason":"Missing prereq"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var res map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("failed to parse json: %v", err)
+			}
+			if res["status"] != "backlog" {
+				t.Errorf("status = %v, want backlog", res["status"])
+			}
+			if res["rejection_reason"] != "Missing prereq" {
+				t.Errorf("rejection_reason = %v, want 'Missing prereq'", res["rejection_reason"])
+			}
+		})
+
+		t.Run(prefix+" reject todo to backlog", func(t *testing.T) {
+			task, err := store.CreateTask(map[string]any{"title": "Todo task", "status": "todo", "project_path": projectPath})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			req := testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{"reason":"Needs clarification"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var res map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("failed to parse json: %v", err)
+			}
+			if res["status"] != "backlog" {
+				t.Errorf("status = %v, want backlog", res["status"])
+			}
+			if res["rejection_reason"] != "Needs clarification" {
+				t.Errorf("rejection_reason = %v, want 'Needs clarification'", res["rejection_reason"])
+			}
+		})
+
+		t.Run(prefix+" reject validation errors", func(t *testing.T) {
+			task, err := store.CreateTask(map[string]any{"title": "Backlog task", "status": "backlog", "project_path": projectPath})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			// Rejecting backlog returns 400
+			req := testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{"reason":"Invalid"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("rejecting backlog: expected 400, got %d", rec.Code)
+			}
+
+			// Empty reason returns 400
+			req = testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{"reason":"   "}`))
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("empty reason: expected 400, got %d", rec.Code)
+			}
+
+			// Missing reason field returns 400
+			req = testReq(http.MethodPost, prefix+"/"+task.ID+"/reject", strings.NewReader(`{}`))
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("missing reason: expected 400, got %d", rec.Code)
+			}
+
+			// 404 for unknown task
+			req = testReq(http.MethodPost, prefix+"/task_missing/reject", strings.NewReader(`{"reason":"Valid"}`))
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("unknown task: expected 404, got %d", rec.Code)
+			}
+
+			// 405 for GET
+			req = testReq(http.MethodGet, prefix+"/"+task.ID+"/reject", nil)
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("GET reject: expected 405, got %d", rec.Code)
+			}
+		})
+
+		t.Run(prefix+" PATCH cannot tamper rejection_reason directly", func(t *testing.T) {
+			task, err := store.CreateTask(map[string]any{"title": "Patch task", "status": "todo", "project_path": projectPath})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			req := testReq(http.MethodPatch, prefix+"/"+task.ID, strings.NewReader(`{"rejection_reason":"Tampered"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			// Because rejection_reason is not in writable columns, passing ONLY rejection_reason returns 400 ("No valid fields provided to update")
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 when attempting to patch rejection_reason directly, got %d", rec.Code)
+			}
+
+			// Passing rejection_reason alongside another field should ignore rejection_reason
+			req = testReq(http.MethodPatch, prefix+"/"+task.ID, strings.NewReader(`{"title":"New Title","rejection_reason":"Tampered"}`))
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			var res map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("failed to parse json: %v", err)
+			}
+			if res["rejection_reason"] != nil {
+				t.Fatalf("rejection_reason should remain null after patch, got %v", res["rejection_reason"])
+			}
+		})
 	}
 }

@@ -50,10 +50,11 @@ $health.version   # 运行中的版本
 | `GET` | `/api/agent/tasks/{id}` | 任务详情 |
 | `PATCH` | `/api/agent/tasks/{id}` | 更新任务（只接受可写字段） |
 | `POST` | `/api/agent/tasks/{id}/notes` | **原子追加**一条备注，body 为 `{"note":"…"}`，返回更新后的任务 |
+| `POST` | `/api/agent/tasks/{id}/reject` | **驳回任务**，body 为 `{"reason":"…"}`，任务回退一档并记录驳回理由，返回更新后的任务 |
 
 ### 任务字段
 
-`id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`created_at`、`updated_at`、`closed_at`。
+`id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`rejection_reason`、`created_at`、`updated_at`、`closed_at`。
 
 - `status`：`backlog` \| `todo` \| `in_progress` \| `review` \| `done`（默认 `todo`）
   - `review`（待审查验证）：实现已完成、等待人工或 Agent 复核的阶段。仍算**未完成**，不设置 `closed_at`。
@@ -61,6 +62,7 @@ $health.version   # 运行中的版本
 - `priority`：`low` \| `medium` \| `high` \| `urgent`（默认 `medium`）
 - `project_path` **必须是绝对路径**，相对路径直接 `400`。
 - `description` / `file_path` / `code_snippet` / `agent_notes` 为可空字段。
+- `rejection_reason`：最近一次驳回的理由，无驳回记录时为 `null`。通过 PATCH 推进到 `review` 或 `done` 时由服务端自动清空，无需手动处理。
 
 ### 查询参数
 
@@ -111,6 +113,35 @@ Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
 Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/notes" `
     -ContentType 'application/json' -Body (@{ note = '基准测试完成：延迟下降 35%' } | ConvertTo-Json)
 ```
+
+### 驳回任务（Reject）
+
+代码审查或测试未通过、编码发现阻碍不可行时使用：**任务状态回退一档**，并把具体缺陷记录到 `rejection_reason`。
+
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}/reject`
+- **请求方式**：`POST`
+- **请求头**：`Content-Type: application/json`
+- **请求体**：`{"reason":"…"}`，`reason` 必填且不能为空白，否则返回 `400`。
+
+```powershell
+# 复核不通过：review -> in_progress
+Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/reject" `
+    -ContentType 'application/json' -Body (@{ reason = '缓存未失效，鉴权仍会回源数据库' } | ConvertTo-Json)
+```
+
+**状态回退规则**：
+
+| 当前状态 | 驳回后状态 |
+| --- | --- |
+| `review` | `in_progress` |
+| `in_progress` | `backlog` |
+| `todo` | `backlog` |
+| `backlog` | `400`（已在待整理，无法驳回） |
+| `done` | `400`（已完成，无法驳回） |
+
+- 成功返回 `200` 与更新后的任务对象，`rejection_reason` 为写入的理由，`closed_at` 保持为 `null`。
+- 任务不存在返回 `404`；`reason` 缺失、类型非字符串或为空返回 `400`。
+- 通过 PATCH 推进到 `review` 或 `done` 时，服务端会自动清空 `rejection_reason`，**无需手动清理**。
 
 ---
 

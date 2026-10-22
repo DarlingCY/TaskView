@@ -48,9 +48,20 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 - `review`（待审查验证）：实现已结束、等待人工或 Agent 复核的阶段。**实现工作结束而尚未验证通过时，置为 `review`**，而不是 `done`。
 - `done`（已完成）：复核通过、可以关闭时才使用，此时才会写入 `closed_at`。
 
-`review` 仍算**未完成**：它不设置 `closed_at`，会继续计入未完成统计。复核不通过时，把状态改回 `in_progress` 继续处理；复核通过后再置为 `done`。
+`review` 仍算**未完成**：它不设置 `closed_at`，会继续计入未完成统计。复核不通过时，用驳回接口把任务退回 `in_progress` 继续处理（见 3.2）；复核通过后再置为 `done`。
 
 追加备注（`POST /api/agent/tasks/{id}/notes`）**不会改变状态**，也不会重置 `review`：复核记录、验证结论等一律写进备注，状态是否变化另行用 PATCH 明确设置。
+
+### 3.2 驳回任务（Reject）
+
+**当代码审查或测试未通过、或编码过程中发现阻碍使原方案不可行时，直接调用 `POST /api/agent/tasks/{id}/reject`，并在 `reason` 中写明具体缺陷理由**，不要只在备注里记录、也不要自行把状态改成 `in_progress`。
+
+- 请求体：`{"reason":"…"}`，`reason` 必填且不能为空白。
+- 状态回退规则：`review` → `in_progress`，`in_progress` → `backlog`，`todo` → `backlog`；对 `backlog` 或 `done` 驳回会返回 `400`，此时改用 PATCH 调整状态。
+- 驳回理由写入任务字段 `rejection_reason`，用户可据此定位问题。
+- **正向推进至 `review` 或 `done` 时，数据库会自动清空 `rejection_reason`，无需手动清理**；驳回后的任务仍可能再次被驳回，理由会被覆盖为最新一条。
+
+`reason` 要写具体的缺陷与证据（如失败的测试用例、错误的接口签名、缺失的前置条件），不要写"无法完成"这类空泛描述。
 
 ### 4. 去重与更新（De-duplication）
 
@@ -80,7 +91,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ```json
 {
   "success": true,
-  "version": "2.0.5"
+  "version": "2.0.6"
 }
 ```
 *(注：服务未就绪时返回 `503 Service Unavailable`，响应含 `"success": false, "error": "..."`)*
@@ -116,6 +127,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
     "line_end": 65,
     "code_snippet": "token := db.Query(ctx, sql)",
     "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+    "rejection_reason": null,
     "created_at": 1792475858231,
     "updated_at": 1792475858231,
     "closed_at": null
@@ -166,6 +178,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
   "line_end": 65,
   "code_snippet": "token := db.Query(ctx, sql)",
   "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "rejection_reason": null,
   "created_at": 1792475858231,
   "updated_at": 1792475858231,
   "closed_at": null
@@ -193,6 +206,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
   "line_end": 65,
   "code_snippet": "token := db.Query(ctx, sql)",
   "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "rejection_reason": null,
   "created_at": 1792475858231,
   "updated_at": 1792475858231,
   "closed_at": null
@@ -217,6 +231,8 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 
 *(注：`status` 取 `backlog` / `todo` / `in_progress` / `review` / `done`。进入 `done` 时写入 `closed_at`；从 `done` 移到其他状态（含 `review`）时清空 `closed_at`)*
 
+*(注：把状态推进到 `review` 或 `done` 时，服务端自动清空 `rejection_reason`，无需手动清理)*
+
 - **响应出参（200 OK）**：
 ```json
 {
@@ -232,6 +248,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
   "line_end": 65,
   "code_snippet": "token := db.Query(ctx, sql)",
   "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "rejection_reason": null,
   "created_at": 1792475858231,
   "updated_at": 1792476758231,
   "closed_at": null
@@ -266,11 +283,63 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
   "line_end": 65,
   "code_snippet": "token := db.Query(ctx, sql)",
   "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑\n基准测试完成：引入本地 LRU 缓存后延迟下降 35%",
+  "rejection_reason": null,
   "created_at": 1792475858231,
   "updated_at": 1792477058231,
   "closed_at": null
 }
 ```
+
+---
+
+### 7. 驳回任务 (Reject Task)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}/reject`
+- **请求方式**：`POST`
+- **请求头**：`Content-Type: application/json`
+- **说明**：代码审查或测试未通过、编码发现阻碍不可行时使用。任务状态回退一档，并把驳回理由写入 `rejection_reason`
+- **请求入参（Body JSON）**：
+```json
+{
+  "reason": "缓存未失效，鉴权仍会回源数据库"
+}
+```
+*(注：`reason` 必填、必须是字符串且不能为空白，否则返回 `400`)*
+
+**状态回退规则**：
+
+| 当前状态 | 驳回后状态 |
+| --- | --- |
+| `review` | `in_progress` |
+| `in_progress` | `backlog` |
+| `todo` | `backlog` |
+| `backlog` | 不允许，返回 `400` |
+| `done` | 不允许，返回 `400` |
+
+*(注：驳回不会写入 `closed_at`；通过 PATCH 推进到 `review` 或 `done` 时服务端自动清空 `rejection_reason`，无需手动清理)*
+
+- **响应出参（200 OK）**：
+```json
+{
+  "id": "T202610190001",
+  "project_path": "D:\\Work\\MyApp",
+  "project_name": "MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "description": "更新后的任务描述",
+  "status": "in_progress",
+  "priority": "urgent",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "rejection_reason": "缓存未失效，鉴权仍会回源数据库",
+  "created_at": 1792475858231,
+  "updated_at": 1792477158231,
+  "closed_at": null
+}
+```
+
+*(错误：`400` `reason` 缺失/为空，或任务处于 `backlog` / `done` 无法驳回；`404` 任务不存在；`405` 方法不允许)*
 
 ---
 
@@ -285,4 +354,4 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 }
 ```
 
-常见状态码：`400` 参数校验失败（路径非绝对、`status`/`priority` 取值非法、`notes` 为空等）；`404` 任务不存在；`405` 方法不允许；`500` 服务内部错误。
+常见状态码：`400` 参数校验失败（路径非绝对、`status`/`priority` 取值非法、`notes` 为空、`reject` 的 `reason` 为空或任务处于 `backlog`/`done` 无法驳回等）；`404` 任务不存在；`405` 方法不允许；`500` 服务内部错误。

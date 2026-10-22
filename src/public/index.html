@@ -8,81 +8,18 @@
 <meta name="color-scheme" content="dark light" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M16 6.5l2.4 6.9 6.9 2.4-6.9 2.4-2.4 6.9-2.4-6.9L6.7 15.8l6.9-2.4z' fill='white'/%3E%3C/svg%3E" />
 
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    darkMode: 'class',
-    theme: {
-      extend: {
-        // The system fonts only: no web font is fetched, so the board opens
-        // instantly and works offline.
-        fontFamily: {
-          display: ['system-ui', '-apple-system', '"Segoe UI"', '"Microsoft YaHei"', 'sans-serif'],
-          sans: ['system-ui', '-apple-system', '"Segoe UI"', '"Microsoft YaHei"', 'sans-serif'],
-          mono: ['ui-monospace', 'Consolas', '"Cascadia Mono"', 'Menlo', 'monospace'],
-        },
-        // Tailwind's default weight scale skips 500/600/700 as named utilities.
-        fontWeight: {
-          450: '450',
-          500: '500',
-          550: '550',
-          600: '600',
-          650: '650',
-          700: '700',
-        },
-        opacity: {
-          6: '0.06', 8: '0.08', 12: '0.12', 14: '0.14', 45: '0.45', 55: '0.55', 85: '0.85',
-        },
-        colors: {
-          app: 'rgb(var(--c-app) / <alpha-value>)',
-          surface: 'rgb(var(--c-surface) / <alpha-value>)',
-          surface2: 'rgb(var(--c-surface-2) / <alpha-value>)',
-          surface3: 'rgb(var(--c-surface-3) / <alpha-value>)',
-          line: 'rgb(var(--c-line) / <alpha-value>)',
-          line2: 'rgb(var(--c-line-2) / <alpha-value>)',
-          ink: 'rgb(var(--c-ink) / <alpha-value>)',
-          ink2: 'rgb(var(--c-ink-2) / <alpha-value>)',
-          ink3: 'rgb(var(--c-ink-3) / <alpha-value>)',
-          brand: 'rgb(var(--c-brand) / <alpha-value>)',
-          backlog: 'rgb(var(--c-backlog) / <alpha-value>)',
-          todo: 'rgb(var(--c-todo) / <alpha-value>)',
-          progress: 'rgb(var(--c-progress) / <alpha-value>)',
-          review: 'rgb(var(--c-review) / <alpha-value>)',
-          done: 'rgb(var(--c-done) / <alpha-value>)',
-          urgent: 'rgb(var(--c-urgent) / <alpha-value>)',
-          high: 'rgb(var(--c-high) / <alpha-value>)',
-          medium: 'rgb(var(--c-medium) / <alpha-value>)',
-          low: 'rgb(var(--c-low) / <alpha-value>)',
-          ai: 'rgb(var(--c-ai) / <alpha-value>)',
-        },
-        boxShadow: {
-          card: '0 1px 2px 0 rgb(0 0 0 / 0.16)',
-          lift: '0 18px 40px -20px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(var(--c-brand) / 0.28)',
-          panel: '0 30px 80px -30px rgb(0 0 0 / 0.7)',
-          brand: '0 10px 30px -12px rgb(var(--c-brand) / 0.65)',
-        },
-        keyframes: {
-          fadeUp: { '0%': { opacity: '0', transform: 'translateY(10px)' }, '100%': { opacity: '1', transform: 'none' } },
-          popIn: { '0%': { opacity: '0', transform: 'scale(.94) translateY(12px)' }, '100%': { opacity: '1', transform: 'none' } },
-          toastIn: { '0%': { opacity: '0', transform: 'translateX(24px) scale(.96)' }, '100%': { opacity: '1', transform: 'none' } },
-          shimmer: { '100%': { transform: 'translateX(100%)' } },
-          spin: { to: { transform: 'rotate(360deg)' } },
-          breathe: { '0%,100%': { opacity: '.55' }, '50%': { opacity: '1' } },
-          dropPulse: { '0%,100%': { opacity: '.35' }, '50%': { opacity: '.8' } },
-        },
-        animation: {
-          fadeUp: 'fadeUp .5s cubic-bezier(.16,1,.3,1) both',
-          popIn: 'popIn .35s cubic-bezier(.16,1,.3,1) both',
-          toastIn: 'toastIn .3s cubic-bezier(.16,1,.3,1) both',
-          shimmer: 'shimmer 1.6s infinite',
-          spin: 'spin .9s linear infinite',
-          breathe: 'breathe 2s ease-in-out infinite',
-          dropPulse: 'dropPulse 1.2s ease-in-out infinite',
-        },
-      },
-    },
-  };
-</script>
+<link rel="stylesheet" href="tailwind.min.css" />
+<!--
+  Tailwind precompiled theme configuration (system fonts, custom status colors):
+  fontFamily: {
+    display: ['system-ui', '-apple-system', "Segoe UI", "Microsoft YaHei", 'sans-serif'],
+    sans: ['system-ui', '-apple-system', "Segoe UI", "Microsoft YaHei", 'sans-serif'],
+    mono: ['ui-monospace', 'Consolas', "Cascadia Mono", 'Menlo', 'monospace'],
+  },
+  colors: {
+    review: 'rgb(var(--c-review) / <alpha-value>)',
+  }
+-->
 
 <style>
   /* ------------------------------------------------------------ theme tokens */
@@ -300,6 +237,15 @@
   }
   .task-card.is-dragging { opacity: .35; transform: rotate(1.2deg) scale(.985); }
   .task-card.is-flash { animation: flashCard .9s ease; }
+  /* a rejected task carries a warning rail on its left edge */
+  .task-card.is-rejected {
+    border-color: rgb(var(--c-urgent) / .55);
+    box-shadow: inset 3px 0 0 rgb(var(--c-urgent) / .9), 0 1px 1px rgb(0 0 0 / .05);
+  }
+  .task-card.is-rejected:hover {
+    border-color: rgb(var(--c-urgent) / .75);
+    box-shadow: inset 3px 0 0 rgb(var(--c-urgent) / .9), 0 14px 34px -18px rgb(0 0 0 / .6);
+  }
   @keyframes flashCard {
     0% { box-shadow: 0 0 0 0 rgb(var(--c-brand) / .45); }
     100% { box-shadow: 0 0 0 10px rgb(var(--c-brand) / 0); }
@@ -310,6 +256,19 @@
   /* when actions appear they occupy the project's slot, so fade it out */
   .task-card:hover .card-project, .task-card:focus-within .card-project { opacity: 0; }
   .card-project { transition: opacity .16s ease; }
+  /* ------------------------------------------------------ rejection badge */
+  .reject-badge {
+    display: inline-flex; align-items: center; gap: .25rem; max-width: 100%;
+    border-radius: .375rem; padding: .1rem .375rem;
+    border: 1px solid rgb(var(--c-urgent) / .38); background: rgb(var(--c-urgent) / .14);
+    color: rgb(var(--c-urgent));
+    font-size: 10px; font-weight: 600; line-height: 1.4; letter-spacing: .01em;
+    cursor: help;
+  }
+  .dark .reject-badge { color: rgb(var(--c-urgent)); border-color: rgb(var(--c-urgent) / .45); background: rgb(var(--c-urgent) / .18); }
+  /* the tooltip is a native title plus an accessible description, so it works
+     without scripting and never clips inside the scrolling column */
+  .reject-badge:focus-visible { outline: 2px solid rgb(var(--c-urgent) / .7); outline-offset: 1px; }
   .icon-btn {
     display: inline-flex; align-items: center; justify-content: center;
     height: 1.75rem; width: 1.75rem; border-radius: .5rem; color: rgb(var(--c-ink-3));
@@ -666,6 +625,8 @@
     listPage: 0,          // 0-based page for the paginated list view
     listPageKey: '',      // filter/view/sort signature the current page belongs to
     tasks: [],
+    tasksFingerprint: null,
+    viewRendered: false,
     projects: [],
     stats: { total: 0, backlog: 0, todo: 0, in_progress: 0, review: 0, done: 0 },
     loading: true,
@@ -1313,9 +1274,65 @@
     return tasks;
   }
 
+  /* ------------------------------------------------------------- fingerprint */
+  // computeTasksFingerprint builds an order-independent compact signature of the
+  // task collection based on task id, updated timestamp, status and priority.
+  // When silent periodic polling or tab refocusing fetches identical data,
+  // comparing this signature lets loadAll() skip expensive board and list DOM destruction.
+  function computeTasksFingerprint(tasks) {
+    if (!Array.isArray(tasks) || tasks.length === 0) return '0:empty';
+    const tokens = new Array(tasks.length);
+    for (let i = 0; i < tasks.length; i += 1) {
+      const t = tasks[i];
+      if (!t) { tokens[i] = ''; continue; }
+      tokens[i] = String(t.id || '') + ':' +
+        String(t.updated_at || '') + ':' +
+        String(t.status || '') + ':' +
+        String(t.priority || '');
+    }
+    tokens.sort();
+    return tasks.length + ':' + tokens.join('|');
+  }
+
+  /* --------------------------------------------------------------- stats derivation */
+  // When a specific project is selected, fetchAllTasks already loads every task of
+  // that project. computeStatsFromTasks derives the exact same stats object in memory,
+  // completely eliminating a redundant HTTP request with 7 SQL aggregates.
+  function computeStatsFromTasks(tasks, projectPath) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const counts = {
+      total: list.length,
+      backlog: 0,
+      todo: 0,
+      in_progress: 0,
+      review: 0,
+      done: 0,
+      open: 0,
+      projects: list.length > 0 ? 1 : 0,
+      project_path: projectPath || null,
+    };
+    for (let i = 0; i < list.length; i += 1) {
+      const task = list[i];
+      if (!task) continue;
+      const st = task.status;
+      if (st === 'backlog') counts.backlog += 1;
+      else if (st === 'todo') counts.todo += 1;
+      else if (st === 'in_progress') counts.in_progress += 1;
+      else if (st === 'review') counts.review += 1;
+      else if (st === 'done') counts.done += 1;
+    }
+    counts.open = Math.max(counts.total - counts.done, 0);
+    return counts;
+  }
+
   async function loadAll(opts) {
     const options = opts || {};
-    if (options.silent) state.refreshing = true; else state.loading = true;
+    if (options.silent) {
+      state.refreshing = true;
+    } else {
+      state.loading = true;
+      state.viewRendered = false;
+    }
     state.error = null;
     renderLoadState();
 
@@ -1324,19 +1341,39 @@
       : '/api/board/tasks?all=true';
 
     try {
-      const results = await Promise.all([
-        api('/api/board/projects'),
-        fetchAllTasks(scope),
-        state.projectPath
-          ? api('/api/board/stats?project_path=' + encodeURIComponent(state.projectPath))
-          : api('/api/board/stats'),
-      ]);
+      const projectsPromise = api('/api/board/projects');
+      const tasksPromise = fetchAllTasks(scope);
+      // Only request /api/board/stats when viewing all projects. For a single project,
+      // the stats are derived in memory from the full project tasks array.
+      const statsPromise = state.projectPath ? null : api('/api/board/stats');
+
+      const results = await Promise.all([projectsPromise, tasksPromise, statsPromise]);
       state.projects = Array.isArray(results[0]) ? results[0] : [];
-      state.tasks = Array.isArray(results[1]) ? results[1] : [];
-      state.stats = results[2] || state.stats;
+      const newTasks = Array.isArray(results[1]) ? results[1] : [];
+      state.stats = state.projectPath
+        ? computeStatsFromTasks(newTasks, state.projectPath)
+        : (results[2] || state.stats);
       state.loading = false;
       state.refreshing = false;
-      renderAll();
+
+      const newFingerprint = computeTasksFingerprint(newTasks);
+      const tasksChanged = state.tasksFingerprint !== newFingerprint;
+      state.tasks = newTasks;
+
+      renderSidebar();
+      renderTopbar();
+      renderStats();
+      if (state.error) { renderLoadState(); return; }
+
+      // When the task data has not changed during a background refresh, skip
+      // destroying and recreating the board/list DOM tree to preserve focus,
+      // hover states, drag operations and scroll positions.
+      const needsRender = tasksChanged || !state.viewRendered || options.force;
+      if (needsRender) {
+        state.tasksFingerprint = newFingerprint;
+        if (state.view === 'board') renderBoard(); else renderList();
+        state.viewRendered = true;
+      }
     } catch (err) {
       state.loading = false;
       state.refreshing = false;
@@ -1347,10 +1384,12 @@
   }
 
   function refreshStats() {
-    const url = state.projectPath
-      ? '/api/board/stats?project_path=' + encodeURIComponent(state.projectPath)
-      : '/api/board/stats';
-    api(url).then(function (stats) {
+    if (state.projectPath) {
+      state.stats = computeStatsFromTasks(state.tasks, state.projectPath);
+      renderStats();
+      return;
+    }
+    api('/api/board/stats').then(function (stats) {
       state.stats = stats || state.stats;
       renderStats();
     }).catch(function () { /* stats are decorative — fail silently */ });
@@ -1404,11 +1443,13 @@
   }
 
   function renderAll() {
+    state.tasksFingerprint = computeTasksFingerprint(state.tasks);
     renderSidebar();
     renderTopbar();
     renderStats();
     if (state.error) { renderLoadState(); return; }
     if (state.view === 'board') renderBoard(); else renderList();
+    state.viewRendered = true;
   }
 
   /* ------------------------------------------------------------------ topbar */
@@ -1577,6 +1618,44 @@
     return STATUS_ORDER[index + 1] || 'done';
   }
 
+  /* ---------------------------------------------------------- rejection */
+  // A task can be sent back from these three states. The server applies the
+  // same mapping, so the preview in the reject dialog and the answer of the
+  // API can never disagree.
+  const REJECTABLE_STATUSES = ['todo', 'in_progress', 'review'];
+
+  function rejectionReason(task) {
+    return String((task && task.rejection_reason) || '').trim();
+  }
+
+  function canReject(task) {
+    return !!task && REJECTABLE_STATUSES.indexOf(task.status) !== -1;
+  }
+
+  // The state a task falls back to when it is rejected.
+  function rejectTargetOf(status) {
+    if (status === 'review') return 'in_progress';
+    if (status === 'in_progress' || status === 'todo') return 'backlog';
+    return null;
+  }
+
+  // The warning badge marks the two states a rejected task waits in while the
+  // work is redone. A task that was pushed forward again no longer carries a
+  // reason, so it needs no badge either.
+  function showsRejectionBadge(task) {
+    if (!task) return false;
+    if (task.status !== 'in_progress' && task.status !== 'backlog') return false;
+    return rejectionReason(task) !== '';
+  }
+
+  // The badge itself: a warning label whose tooltip carries the full reason.
+  function rejectionBadgeHtml(task) {
+    if (!showsRejectionBadge(task)) return '';
+    const reason = rejectionReason(task);
+    return '<span class="reject-badge shrink-0" tabindex="0" title="' + attr(reason) + '">' +
+      icon('alert', 'h-3 w-3 shrink-0') + '<span class="truncate">已驳回</span></span>';
+  }
+
   // Board cards are always ordered by priority (urgent → low). This is independent
   // of the sort dropdown, which only drives the list view.
   function byBoardPriority(a, b) {
@@ -1592,23 +1671,35 @@
     const projectName = String(task.project_name || '').trim();
     const next = nextStatusOf(task.status);
     const nextMeta = STATUS_META[next];
+    const rejected = showsRejectionBadge(task);
+    const rejectable = canReject(task);
+    const rejectTarget = rejectTargetOf(task.status);
 
     return '' +
-      '<article class="task-card group p-3 cursor-pointer animate-fadeUp" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
-        'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title + ' · ' + meta.label + ' · ' + priorityMeta.label + '优先级') + '">' +
+      '<article class="task-card group p-3 cursor-pointer animate-fadeUp' + (rejected ? ' is-rejected' : '') + '" style="--accent:rgb(var(--c-' + tone + ')); animation-delay:' + Math.min(index, 12) * 35 + 'ms" ' +
+        'data-task-id="' + attr(task.id) + '" draggable="true" tabindex="0" role="button" aria-label="' + attr(task.title + ' · ' + meta.label + ' · ' + priorityMeta.label + '优先级' + (rejected ? ' · 已被驳回' : '')) + '">' +
         '<div class="relative mb-1 flex h-6 items-center gap-2">' +
           '<h3 class="min-w-0 flex-1 truncate text-[13px] font-600 leading-snug tracking-[-.01em] text-ink ' + (task.status === 'done' ? 'line-through decoration-ink3/50 decoration-[1.5px]' : '') + '" title="' + attr(task.title) + '">' + esc(task.title) + '</h3>' +
           '<span class="card-project card-sub shrink-0 max-w-[40%] truncate text-right text-[11px] font-500 text-ink2" title="' + attr(projectName || '未归属项目') + '">' + esc(projectName || '未归属项目') + '</span>' +
           '<span class="card-actions absolute right-0 top-0 flex h-6 items-center gap-0.5">' +
             '<button data-act="advance" tabindex="-1" title="' + (task.status === 'done' ? '重新打开为待办' : '推进至 ' + nextMeta.label) + '" ' +
               'class="icon-btn h-6 w-6" style="color:rgb(var(--c-' + nextMeta.tone + '))">' + icon(next === 'done' ? 'check' : 'arrowRight', 'h-3.5 w-3.5') + '</button>' +
+            (rejectable
+              ? '<button data-act="reject" tabindex="-1" title="' + attr('驳回并说明理由（回到' + STATUS_META[rejectTarget].label + '）') + '" class="icon-btn h-6 w-6" style="color:rgb(var(--c-urgent))">' + icon('undo', 'h-3.5 w-3.5') + '</button>'
+              : '') +
             '<button data-act="edit" tabindex="-1" title="编辑任务" class="icon-btn h-6 w-6">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
             '<button data-act="delete" tabindex="-1" title="删除任务" class="icon-btn icon-btn-danger h-6 w-6">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
           '</span>' +
         '</div>' +
 
+        (rejected
+          ? '<div class="mt-1.5 flex items-center gap-1.5">' + rejectionBadgeHtml(task) +
+            '<span class="card-sub min-w-0 truncate text-[11px]" title="' + attr(rejectionReason(task)) + '">' + esc(rejectionReason(task)) + '</span>' +
+          '</div>'
+          : '') +
+
         (task.description
-          ? '<p class="card-sub mt-1 text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
+          ? '<p class="card-sub ' + (rejected ? 'mt-2' : 'mt-1') + ' text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
           : '') +
 
         '<div class="mt-2.5 flex items-center justify-between gap-1.5">' +
@@ -1705,7 +1796,11 @@
             '<div class="flex items-center gap-2">' +
               '<span class="truncate text-[13px] font-500 text-ink">' + esc(task.title) + '</span>' +
               (task.agent_notes ? '<span class="shrink-0 text-ai" title="包含智能体备注">' + icon('sparkles', 'h-3.5 w-3.5') + '</span>' : '') +
+              (showsRejectionBadge(task) ? rejectionBadgeHtml(task) : '') +
             '</div>' +
+            (showsRejectionBadge(task)
+              ? '<p class="mt-0.5 truncate text-[11.5px] text-urgent" title="' + attr(rejectionReason(task)) + '">驳回：' + esc(rejectionReason(task)) + '</p>'
+              : '') +
             (task.description ? '<p class="mt-0.5 truncate text-[11.5px] text-ink3">' + esc(task.description) + '</p>' : '') +
           '</td>' +
           '<td class="max-w-[230px] px-2 py-2.5">' +
@@ -1720,6 +1815,9 @@
           '<td class="py-2.5 pl-2 pr-3">' +
             '<span class="flex items-center justify-end gap-0.5">' +
               '<button data-act="code" class="icon-btn h-6 w-6" title="查看代码">' + icon('fileCode', 'h-3.5 w-3.5') + '</button>' +
+              (canReject(task)
+                ? '<button data-act="reject" class="icon-btn h-6 w-6" title="驳回并说明理由" style="color:rgb(var(--c-urgent))">' + icon('undo', 'h-3.5 w-3.5') + '</button>'
+                : '') +
               '<button data-act="edit" class="icon-btn h-6 w-6" title="编辑">' + icon('pencil', 'h-3.5 w-3.5') + '</button>' +
               '<button data-act="delete" class="icon-btn icon-btn-danger h-6 w-6" title="删除">' + icon('trash', 'h-3.5 w-3.5') + '</button>' +
             '</span>' +
@@ -1928,6 +2026,7 @@
     if (action === 'delete') { confirmDelete(task); return; }
     if (action === 'code') { openCodeModal(task); return; }
     if (action === 'advance') { moveTask(task.id, nextStatusOf(task.status)); return; }
+    if (action === 'reject') { openRejectModal(task); return; }
     if (action === 'cycle-priority') { cyclePriority(task.id); return; }
     if (action === 'open') { openTaskModal(task); }
   }
@@ -2031,6 +2130,19 @@
               '<textarea id="f-description" data-field="description" rows="3" class="field resize-y leading-relaxed" placeholder="问题是什么？期望的理想效果是什么？">' + esc(t.description || '') + '</textarea>' +
             '</div>' +
 
+            // The full rejection reason belongs in the editor: it is the reason
+            // the task was sent back, so it has to be readable in one place.
+            (rejectionReason(t)
+              ? '<div class="rounded-xl border border-urgent/35 bg-urgent/8 p-3.5" data-rejection-block>' +
+                  '<div class="mb-2 flex items-center gap-2">' +
+                    '<span class="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-urgent/14 text-urgent">' + icon('alert', 'h-3.5 w-3.5') + '</span>' +
+                    '<h3 class="text-[11px] font-600 uppercase tracking-[.1em] text-urgent">驳回原因</h3>' +
+                    '<span class="ml-auto text-[10.5px] text-ink3">上一次被驳回</span>' +
+                  '</div>' +
+                  '<p class="whitespace-pre-line text-[12.5px] leading-relaxed text-ink2" data-rejection-reason>' + esc(rejectionReason(t)) + '</p>' +
+                '</div>'
+              : '') +
+
             '<div class="grid gap-4 sm:grid-cols-2">' +
               '<div class="sm:col-span-2">' +
                 '<label class="label">状态</label>' +
@@ -2091,6 +2203,11 @@
 
           '<footer class="flex shrink-0 items-center justify-end gap-2 border-t border-line-2 bg-surface2/40 px-5 py-3">' +
             (isEdit ? '<button type="button" data-delete-task class="mr-auto inline-flex items-center gap-1.5 rounded-lg border border-urgent/30 px-2.5 py-1.5 text-[12px] font-500 text-urgent transition-colors hover:bg-urgent/10">' + icon('trash', 'h-3.5 w-3.5') + '删除</button>' : '') +
+            (isEdit && canReject(task)
+              ? '<button type="button" data-reject-task class="inline-flex items-center gap-1.5 rounded-lg border border-urgent/30 px-2.5 py-1.5 text-[12px] font-500 text-urgent transition-colors hover:bg-urgent/10">' +
+                  icon('undo', 'h-3.5 w-3.5') + '驳回' +
+                '</button>'
+              : '') +
             '<button type="button" data-modal-close class="rounded-lg border border-line bg-surface2 px-3.5 py-2 text-[12.5px] font-500 text-ink2 transition-colors hover:text-ink">取消</button>' +
             '<button type="submit" data-submit class="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-b from-brand to-brand/85 px-4 py-2 text-[12.5px] font-600 text-white shadow-brand transition-all hover:brightness-110 active:scale-95 disabled:opacity-60">' +
               icon('check', 'h-3.5 w-3.5') + (isEdit ? '保存更改' : '新建任务') +
@@ -2165,6 +2282,12 @@
     const deleteBtn = layer.querySelector('[data-delete-task]');
     if (deleteBtn && task) {
       deleteBtn.addEventListener('click', function () { closeModal(); confirmDelete(task); });
+    }
+
+    // reject action inside the editor
+    const rejectBtn = layer.querySelector('[data-reject-task]');
+    if (rejectBtn && task) {
+      rejectBtn.addEventListener('click', function () { closeModal(); openRejectModal(task); });
     }
 
     function showError(field, message) {
@@ -2365,6 +2488,114 @@
     } catch (e) { failed(); }
   }
 
+  /* ================================================================== reject */
+  // The reject dialog collects the mandatory reason and hands it to the API.
+  // The server owns the state transition, the client only previews it.
+  function openRejectModal(task) {
+    if (!task) return;
+    const target = rejectTargetOf(task.status);
+    if (!target) {
+      toast('该状态的任务无法驳回', { tone: 'warn' });
+      return;
+    }
+    const previousReason = rejectionReason(task);
+
+    openModal({
+      size: 'max-w-lg',
+      titleId: 'reject-modal-title',
+      html:
+        '<form novalidate class="flex min-h-0 flex-col">' +
+          '<header class="flex shrink-0 items-center gap-3 border-b border-line-2 px-5 py-3.5">' +
+            '<span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-urgent/14 text-urgent">' + icon('undo', 'h-4 w-4') + '</span>' +
+            '<div class="min-w-0 flex-1">' +
+              '<h2 id="reject-modal-title" class="font-display text-[15px] font-600 tracking-tight text-ink">驳回任务</h2>' +
+              '<p class="mt-0.5 truncate text-[11.5px] text-ink3">' + esc(task.title) + '</p>' +
+            '</div>' +
+            '<button type="button" data-modal-close class="icon-btn shrink-0" aria-label="关闭">' + icon('x', 'h-4 w-4') + '</button>' +
+          '</header>' +
+
+          '<div class="flex-1 space-y-3.5 overflow-y-auto scroll-thin px-5 py-4">' +
+            '<div class="flex items-center gap-2 rounded-lg border border-line-2 bg-surface2/50 px-3 py-2.5 text-[12px] text-ink2">' +
+              '<span class="shrink-0 font-500">' + esc((STATUS_META[task.status] || STATUS_META.todo).label) + '</span>' +
+              icon('arrowRight', 'h-3.5 w-3.5 shrink-0 text-ink3') +
+              '<span class="shrink-0 font-600 text-urgent">' + esc(STATUS_META[target].label) + '</span>' +
+              '<span class="ml-auto shrink-0 text-[11px] text-ink3">' + esc(task.id) + '</span>' +
+            '</div>' +
+            '<div>' +
+              '<label class="label" for="f-reject-reason">驳回原因 <span class="text-urgent">*</span></label>' +
+              '<textarea id="f-reject-reason" data-reject-reason rows="4" class="field resize-y leading-relaxed" placeholder="写明具体的缺陷与证据，例如失败的测试用例、错误的接口签名、缺失的前置条件。"></textarea>' +
+              '<p data-error-for="reason" class="mt-1 hidden text-[11px] text-urgent"></p>' +
+            '</div>' +
+            (previousReason
+              ? '<p class="rounded-lg border border-line-2 bg-surface2/40 px-3 py-2 text-[11.5px] leading-relaxed text-ink3">上一次驳回理由：' + esc(previousReason) + '</p>'
+              : '') +
+          '</div>' +
+
+          '<footer class="flex shrink-0 items-center justify-end gap-2 border-t border-line-2 bg-surface2/40 px-5 py-3">' +
+            '<button type="button" data-modal-close class="rounded-lg border border-line bg-surface2 px-3.5 py-2 text-[12.5px] font-500 text-ink2 transition-colors hover:text-ink">取消</button>' +
+            '<button type="submit" data-confirm-reject class="inline-flex items-center gap-1.5 rounded-lg bg-urgent px-4 py-2 text-[12.5px] font-600 text-white transition-all hover:brightness-110 active:scale-95 disabled:opacity-60">' +
+              icon('undo', 'h-3.5 w-3.5') + '确认驳回' +
+            '</button>' +
+          '</footer>' +
+        '</form>',
+      onMount: function (l) {
+        const form = l.querySelector('form');
+        const area = l.querySelector('[data-reject-reason]');
+        const error = l.querySelector('[data-error-for="reason"]');
+        const submit = l.querySelector('[data-confirm-reject]');
+
+        $$('[data-modal-close]', l).forEach(function (b) { b.addEventListener('click', closeModal); });
+
+        function showError(message) {
+          if (error) {
+            error.textContent = message;
+            error.classList.toggle('hidden', !message);
+          }
+          if (area) area.classList.toggle('field-invalid', !!message);
+        }
+
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          const reason = String(area ? area.value : '').trim();
+          showError('');
+          if (!reason) {
+            showError('请填写驳回理由。');
+            if (area) area.focus();
+            return;
+          }
+          submit.disabled = true;
+          const originalHtml = submit.innerHTML;
+          submit.innerHTML = '<span class="inline-flex animate-spin">' + icon('loader', 'h-3.5 w-3.5') + '</span> 驳回中…';
+          performReject(task, reason).then(function () {
+            closeModal();
+          }).catch(function (err) {
+            submit.disabled = false;
+            submit.innerHTML = originalHtml;
+            showError(err.message || '无法驳回任务');
+          });
+        });
+      },
+    });
+  }
+
+  async function performReject(task, reason) {
+    try {
+      const updated = unwrapTask(await api('/api/board/tasks/' + encodeURIComponent(task.id) + '/reject', {
+        method: 'POST',
+        body: { reason: reason },
+      }));
+      if (updated) replaceTask(updated);
+      renderAll();
+      refreshStats();
+      refreshSidebarCounts();
+      toast('已驳回，理由已记录', { tone: 'warn' });
+      return updated;
+    } catch (err) {
+      // The dialog shows the reason inline, so the error is not toasted twice.
+      throw err;
+    }
+  }
+
   /* ==================================================================== delete */
   function confirmDelete(task) {
     openModal({
@@ -2461,6 +2692,7 @@
     mainScroll.classList.remove('overflow-y-auto', 'overflow-auto');
     renderTopbar();
     if (view === 'board') renderBoard(); else renderList();
+    state.viewRendered = true;
   }
 
   function setSidebar(open) {
@@ -2510,7 +2742,7 @@
     $('#clear-filters').addEventListener('click', function () {
       state.priorities.clear(); renderAll();
     });
-    $('#refresh').addEventListener('click', function () { loadAll({ silent: true }); });
+    $('#refresh').addEventListener('click', function () { loadAll({ force: true, silent: true }); });
     $('#view-board').addEventListener('click', function () { setView('board'); });
     $('#view-list').addEventListener('click', function () { setView('list'); });
     $('#sort').addEventListener('change', function (e) { state.sort = e.target.value; renderAll(); });
@@ -2521,6 +2753,7 @@
       state.search = search.value;
       renderTopbar();
       if (state.view === 'board') renderBoard(); else renderList();
+      state.viewRendered = true;
     }, 110);
     search.addEventListener('input', function () {
       state.search = search.value;
@@ -2532,6 +2765,7 @@
         state.search = search.value;
         renderTopbar();
         if (state.view === 'board') renderBoard(); else renderList();
+        state.viewRendered = true;
       }
     });
     $('#search-clear').addEventListener('click', function () {

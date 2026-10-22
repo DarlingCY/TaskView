@@ -14,7 +14,6 @@ import (
 	"context"
 	"strings"
 	"sync"
-	"time"
 )
 
 // trayOptions configures the notification area icon.
@@ -57,14 +56,6 @@ const (
 	trayUpdateTitle        = "检查更新"
 	trayUpdateRunningTitle = "正在检查…"
 )
-
-// updateCheckTimeout bounds an update check.
-//
-// It is generous on purpose: the check asks the user to confirm before the
-// installer is downloaded, and that wait belongs to the user, not to the
-// timeout. The check and the download share one deadline, so the timeout
-// covers both.
-const updateCheckTimeout = 10 * time.Minute
 
 // clickable is a menu entry that reports activations.
 type clickable interface {
@@ -285,14 +276,16 @@ func (c *trayController) checkForUpdate() {
 
 // updateContext returns the context an update check runs under.
 //
-// The check is bound to the lifetime of the tray, so shutting TaskView down
-// cancels a check that is still running.
+// The check is bound to the lifetime of the tray and nothing else: it carries
+// no deadline of its own. The update divides itself into phases and gives
+// every phase its own budget, and a deadline here would spend that budget
+// while the user is still reading the confirmation prompt.
 func (c *trayController) updateContext() (context.Context, context.CancelFunc) {
 	parent := c.opts.Context
 	if parent == nil {
 		parent = context.Background()
 	}
-	return context.WithTimeout(parent, updateCheckTimeout)
+	return context.WithCancel(parent)
 }
 
 // beginAutostart reserves the autostart action. It reports false when an

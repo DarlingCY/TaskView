@@ -637,6 +637,122 @@ func TestAppendNotes(t *testing.T) {
 	}
 }
 
+func TestRejectTaskStateTransitions(t *testing.T) {
+	store := memStore(t)
+
+	// 1. review -> in_progress
+	tReview := create(t, store, map[string]any{"title": "Review task", "status": "review"})
+	rejectedReview, err := store.RejectTask(tReview.ID, "Needs more test coverage")
+	if err != nil {
+		t.Fatalf("RejectTask(review): %v", err)
+	}
+	if rejectedReview.Status != "in_progress" {
+		t.Errorf("rejectedReview status = %q, want in_progress", rejectedReview.Status)
+	}
+	if rejectedReview.RejectionReason == nil || *rejectedReview.RejectionReason != "Needs more test coverage" {
+		t.Errorf("rejectedReview reason = %v, want 'Needs more test coverage'", rejectedReview.RejectionReason)
+	}
+
+	// 2. in_progress -> backlog
+	tInProgress := create(t, store, map[string]any{"title": "InProgress task", "status": "in_progress"})
+	rejectedInProgress, err := store.RejectTask(tInProgress.ID, "Blocked by upstream dependency")
+	if err != nil {
+		t.Fatalf("RejectTask(in_progress): %v", err)
+	}
+	if rejectedInProgress.Status != "backlog" {
+		t.Errorf("rejectedInProgress status = %q, want backlog", rejectedInProgress.Status)
+	}
+	if rejectedInProgress.RejectionReason == nil || *rejectedInProgress.RejectionReason != "Blocked by upstream dependency" {
+		t.Errorf("rejectedInProgress reason = %v, want 'Blocked by upstream dependency'", rejectedInProgress.RejectionReason)
+	}
+
+	// 3. todo -> backlog
+	tTodo := create(t, store, map[string]any{"title": "Todo task", "status": "todo"})
+	rejectedTodo, err := store.RejectTask(tTodo.ID, "Unclear requirements")
+	if err != nil {
+		t.Fatalf("RejectTask(todo): %v", err)
+	}
+	if rejectedTodo.Status != "backlog" {
+		t.Errorf("rejectedTodo status = %q, want backlog", rejectedTodo.Status)
+	}
+	if rejectedTodo.RejectionReason == nil || *rejectedTodo.RejectionReason != "Unclear requirements" {
+		t.Errorf("rejectedTodo reason = %v, want 'Unclear requirements'", rejectedTodo.RejectionReason)
+	}
+
+	// 4. Validate empty reason is rejected
+	if _, err := store.RejectTask(tReview.ID, "   "); !IsValidationError(err) {
+		t.Errorf("empty reason: err = %v, want ValidationError", err)
+	}
+
+	// 5. Backlog task cannot be rejected
+	tBacklog := create(t, store, map[string]any{"title": "Backlog task", "status": "backlog"})
+	if _, err := store.RejectTask(tBacklog.ID, "Cannot reject backlog"); !IsValidationError(err) {
+		t.Errorf("reject backlog: err = %v, want ValidationError", err)
+	}
+
+	// 6. Done task cannot be rejected
+	tDone := create(t, store, map[string]any{"title": "Done task", "status": "done"})
+	if _, err := store.RejectTask(tDone.ID, "Cannot reject done"); !IsValidationError(err) {
+		t.Errorf("reject done: err = %v, want ValidationError", err)
+	}
+
+	// 7. Non-existent task returns (nil, nil)
+	missing, err := store.RejectTask("task_missing", "Reason")
+	if err != nil || missing != nil {
+		t.Errorf("RejectTask on missing id = (%v, %v), want (nil, nil)", missing, err)
+	}
+}
+
+func TestUpdateTaskClearsRejectionReasonOnReviewAndDone(t *testing.T) {
+	store := memStore(t)
+
+	// Create task, reject it to have a rejection reason
+	task := create(t, store, map[string]any{"title": "Test reset reason", "status": "todo"})
+	rejected, err := store.RejectTask(task.ID, "Some reason")
+	if err != nil {
+		t.Fatalf("RejectTask: %v", err)
+	}
+	if rejected.RejectionReason == nil {
+		t.Fatal("expected non-nil rejection_reason after reject")
+	}
+
+	// Move to in_progress via UpdateTask: reason should still be present
+	inProg, err := store.UpdateTask(task.ID, map[string]any{"status": "in_progress"})
+	if err != nil {
+		t.Fatalf("UpdateTask(in_progress): %v", err)
+	}
+	if inProg.RejectionReason == nil || *inProg.RejectionReason != "Some reason" {
+		t.Errorf("in_progress should preserve rejection_reason, got %v", inProg.RejectionReason)
+	}
+
+	// Move to review: reason should be cleared (NULL)
+	reviewed, err := store.UpdateTask(task.ID, map[string]any{"status": "review"})
+	if err != nil {
+		t.Fatalf("UpdateTask(review): %v", err)
+	}
+	if reviewed.RejectionReason != nil {
+		t.Errorf("moving to review should clear rejection_reason, got %v", *reviewed.RejectionReason)
+	}
+
+	// Reject again
+	rejectedAgain, err := store.RejectTask(task.ID, "Review failed")
+	if err != nil {
+		t.Fatalf("RejectTask: %v", err)
+	}
+	if rejectedAgain.RejectionReason == nil || *rejectedAgain.RejectionReason != "Review failed" {
+		t.Fatalf("expected 'Review failed', got %v", rejectedAgain.RejectionReason)
+	}
+
+	// Move to done: reason should be cleared (NULL)
+	done, err := store.UpdateTask(task.ID, map[string]any{"status": "done"})
+	if err != nil {
+		t.Fatalf("UpdateTask(done): %v", err)
+	}
+	if done.RejectionReason != nil {
+		t.Errorf("moving to done should clear rejection_reason, got %v", *done.RejectionReason)
+	}
+}
+
 // TestAppendNotesIsAtomicUnderConcurrency guards the append against the
 // read-modify-write race: every note has to survive, no matter how many
 // writers append at the same time.
@@ -1917,7 +2033,7 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 
 	for _, column := range []string{"id", "project_path", "project_name", "title", "description",
 		"status", "priority", "file_path", "line_start", "line_end", "code_snippet",
-		"agent_notes", "created_at", "updated_at", "closed_at"} {
+		"agent_notes", "rejection_reason", "created_at", "updated_at", "closed_at"} {
 		if _, ok := defaults[column]; !ok {
 			t.Errorf("legacy table is missing column %q", column)
 		}
@@ -1925,8 +2041,8 @@ func TestLegacyNodeDatabaseIsAdoptedVerbatim(t *testing.T) {
 	if _, ok := defaults["tags"]; ok {
 		t.Error("legacy table still has a tags column after the migration")
 	}
-	if len(defaults) != 15 {
-		t.Errorf("legacy table has %d columns, want 15", len(defaults))
+	if len(defaults) != 16 {
+		t.Errorf("legacy table has %d columns, want 16", len(defaults))
 	}
 	if defaults["status"] != "'todo'" || defaults["priority"] != "'medium'" {
 		t.Errorf("column defaults = status %q priority %q, want 'todo'/'medium'",
@@ -2337,7 +2453,7 @@ func TestMigrationDropsTagsColumnAndPreservesEveryOtherField(t *testing.T) {
 
 	// Every index the schema defines must exist on the rebuilt table.
 	indexes := taskIndexNames(t, store.db)
-	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_status",
+	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_lower_proj_status", "idx_tasks_status",
 		"idx_tasks_created_at", "idx_tasks_updated_at", "idx_tasks_priority"} {
 		if !indexes[want] {
 			t.Errorf("missing index %s after the migration (found: %v)", want, indexes)
@@ -2510,6 +2626,56 @@ func TestPingReadsTheDatabase(t *testing.T) {
 	if err := closed.Ping(); err == nil {
 		t.Error("Ping on a closed store should fail, the health check must not lie")
 	}
+}
+
+func TestQueryPlanUsesCompositeExpressionIndex(t *testing.T) {
+	store := memStore(t)
+	proj := filepath.Join(t.TempDir(), "app")
+
+	for i := 0; i < 5; i++ {
+		create(t, store, map[string]any{
+			"title":        fmt.Sprintf("Task %d", i),
+			"project_path": proj,
+			"status":       "todo",
+		})
+	}
+
+	checkPlan := func(query string, args ...any) {
+		t.Helper()
+		rows, err := store.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatalf("EXPLAIN QUERY PLAN (%s): %v", query, err)
+		}
+		defer rows.Close()
+
+		var details []string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatalf("scan plan row: %v", err)
+			}
+			details = append(details, detail)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate plan: %v", err)
+		}
+
+		joined := strings.Join(details, "\n")
+		// The query must use idx_tasks_lower_proj_status and not SCAN tasks
+		if strings.Contains(joined, "SCAN tasks") || strings.Contains(joined, "SCAN TABLE tasks") {
+			t.Errorf("query plan performed table scan instead of using index:\n%s", joined)
+		}
+		if !strings.Contains(joined, "idx_tasks_lower_proj_status") {
+			t.Errorf("query plan did not use idx_tasks_lower_proj_status:\n%s", joined)
+		}
+	}
+
+	// 1. Scoped by project_path only
+	checkPlan("SELECT "+taskColumns+" FROM tasks WHERE LOWER(project_path) = LOWER(?)", proj)
+
+	// 2. Scoped by project_path and status
+	checkPlan("SELECT "+taskColumns+" FROM tasks WHERE LOWER(project_path) = LOWER(?) AND status = ?", proj, "todo")
 }
 
 // ---------------------------------------------------------------- helpers --

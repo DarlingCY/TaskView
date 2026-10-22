@@ -270,6 +270,46 @@ func handleAgentAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			return
 		}
 
+		// POST /api/agent/tasks/{id}/reject
+		if sub == "reject" {
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				agentSendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
+				return
+			}
+			body, err := agentReadJSONBody(r)
+			if err != nil {
+				agentSendError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			reason, ok := body["reason"].(string)
+			if !ok {
+				agentSendError(w, http.StatusBadRequest, "reason is required and must be a string")
+				return
+			}
+			reason = strings.TrimSpace(reason)
+			if reason == "" {
+				agentSendError(w, http.StatusBadRequest, "reason must not be empty")
+				return
+			}
+
+			updated, err := store.RejectTask(id, reason)
+			if err != nil {
+				if IsValidationError(err) {
+					agentSendError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				agentSendError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if updated == nil {
+				agentSendError(w, http.StatusNotFound, fmt.Sprintf("Task not found: %s", id))
+				return
+			}
+			agentSendJSON(w, http.StatusOK, updated)
+			return
+		}
+
 		if sub != "" {
 			agentSendError(w, http.StatusNotFound, fmt.Sprintf("Unknown API endpoint: %s", cleanPath))
 			return
