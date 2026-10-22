@@ -20,7 +20,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ### 2. 工程作用域（Project Scope）
 
 - `project_path` **必须是绝对路径**，相对路径会被接口拒绝（`400`）。
-- 列表必须显式给出作用域：`project_path=<绝对路径>`，或 `all=true` 查看全部工程。
+- 列表必须显式给出工程作用域：`project_path=<绝对路径>`。
 - 任务 ID 全局唯一（形如 `T202610190001`）。改动前核对详情里的 `project_path`，切勿误操作其他工程的任务。
 
 ### 3. 需求范围与记录要素（Prevent Scope Creep）
@@ -31,7 +31,7 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 
 ### 4. 去重与更新（De-duplication）
 
-- 新建前先检索：`GET /api/agent/tasks?project_path=<工程路径>&search=<关键词>`（跨工程用 `all=true`）。
+- 新建前先查询当前工程既有任务：`GET /api/agent/tasks?project_path=<工程绝对路径>`，核对是否已有同类记录。
 - 同类任务使用 `POST /api/agent/tasks/{id}/notes`（body `{"note":"…"}`）原子追加进展，避免重复创建。
 - 除非用户明确要求，否则不要删除任务。
 
@@ -43,30 +43,230 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 
 ---
 
-## HTTP API 速查（Base URL: `http://127.0.0.1:3333`）
+## HTTP API 规范（Base URL: `http://127.0.0.1:3333`）
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/agent/health` | 健康检查，`200` → `{success,version,db}`；数据库不可用 → `503` |
-| `GET` | `/api/agent/tasks` | 列表：`project_path`（必填，绝对路径）或 `all=true`；可选 `search`/`q`、`status`、`priority`、`sort`、`limit`(1..500)、`offset`(>=0) |
-| `POST` | `/api/agent/tasks` | 新建，返回 `201` 与任务对象 |
-| `GET` | `/api/agent/tasks/{id}` | 详情 |
-| `PATCH`/`PUT` | `/api/agent/tasks/{id}` | 更新（可写字段：`title`、`description`、`status`、`priority`、`file_path`、`line_start`、`line_end`、`code_snippet`、`agent_notes`、`project_path`） |
-| `POST` | `/api/agent/tasks/{id}/notes` | 原子追加备注，body `{"note":"…"}`，返回更新后的任务 |
+### 1. 健康检查 (Health Check)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/health`
+- **请求方式**：`GET`
+- **请求入参**：无
+- **响应出参（200 OK）**：
+```json
+{
+  "success": true,
+  "version": "2.0.2"
+}
+```
+*(注：服务未就绪时返回 `503 Service Unavailable`，响应含 `"success": false, "error": "..."`)*
 
-字段取值：`status` = `backlog` \| `todo` \| `in_progress` \| `done`（默认 `todo`）；`priority` = `low` \| `medium` \| `high` \| `urgent`（默认 `medium`）；`sort` = `updated` \| `created` \| `priority` \| `title`。
+---
 
-**分页**：`limit` 范围 `1..500`（默认 `500`），配合 `offset` 递增翻页，返回条数小于 `limit` 即结束。
+### 2. 查询任务列表 (List Tasks)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks`
+- **请求方式**：`GET`
+- **Query 参数**：
+  | 参数 | 类型 | 必填 | 说明 |
+  | --- | --- | --- | --- |
+  | `project_path` | string | 是 | 工程绝对路径 |
+  | `status` | string | 否 | 单个状态过滤：`backlog` \| `todo` \| `in_progress` \| `done` |
+  | `priority` | string | 否 | 单个优先级过滤：`low` \| `medium` \| `high` \| `urgent` |
 
-### 调用示例（PowerShell）
+`status` 和 `priority` 各只允许一个值，不支持逗号分隔或重复传入同名参数，多值请求返回 `400 Bad Request`。
+
+- **请求入参**：无（通过 URL Query 传参）
+- **响应出参（200 OK）**：
+```json
+[
+  {
+    "id": "T202610190001",
+    "project_path": "D:\\Work\\MyApp",
+    "project_name": "MyApp",
+    "title": "重构 Auth 中间件的 Token 缓存",
+    "description": "高并发下每次请求都会回源数据库校验 Token",
+    "status": "todo",
+    "priority": "high",
+    "file_path": "src/middleware/auth.go",
+    "line_start": 42,
+    "line_end": 65,
+    "code_snippet": "token := db.Query(ctx, sql)",
+    "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+    "created_at": 1792475858231,
+    "updated_at": 1792475858231,
+    "closed_at": null
+  }
+]
+```
+*(说明：`created_at`/`updated_at`/`closed_at` 为 Unix 毫秒时间戳)*
+
+---
+
+### 3. 新建任务 (Create Task)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks`
+- **请求方式**：`POST`
+- **请求头**：`Content-Type: application/json`
+- **请求入参（Body JSON）**：
+```json
+{
+  "project_path": "D:\\Work\\MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "priority": "high",
+  "status": "todo",
+  "description": "高并发下每次请求都会回源数据库校验 Token",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑"
+}
+```
+*(注：`project_path` 与 `title` 为必填字段；`project_path` 必须为绝对路径。其余字段均可选，`status` 默认 `todo`，`priority` 默认 `medium`)*
+
+字段取值：`status` = `backlog` \| `todo` \| `in_progress` \| `done`；`priority` = `low` \| `medium` \| `high` \| `urgent`。
+
+- **响应出参（201 Created）**：
+```json
+{
+  "id": "T202610190001",
+  "project_path": "D:\\Work\\MyApp",
+  "project_name": "MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "description": "高并发下每次请求都会回源数据库校验 Token",
+  "status": "todo",
+  "priority": "high",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "created_at": 1792475858231,
+  "updated_at": 1792475858231,
+  "closed_at": null
+}
+```
+
+---
+
+### 4. 获取任务详情 (Get Task Detail)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}`
+- **请求方式**：`GET`
+- **请求入参**：无（路径参数 `{id}`，如 `T202610190001`）
+- **响应出参（200 OK）**：
+```json
+{
+  "id": "T202610190001",
+  "project_path": "D:\\Work\\MyApp",
+  "project_name": "MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "description": "高并发下每次请求都会回源数据库校验 Token",
+  "status": "todo",
+  "priority": "high",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "created_at": 1792475858231,
+  "updated_at": 1792475858231,
+  "closed_at": null
+}
+```
+
+---
+
+### 5. 更新任务 (Update Task)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}`
+- **请求方式**：`PATCH`
+- **请求头**：`Content-Type: application/json`
+- **请求入参（Body JSON）**：
+```json
+{
+  "status": "in_progress",
+  "priority": "urgent",
+  "description": "更新后的任务描述"
+}
+```
+*(注：仅传入需更新的字段，支持：`title`、`status`、`priority`、`description`、`file_path`、`line_start`、`line_end`、`code_snippet`、`agent_notes`)*
+
+- **响应出参（200 OK）**：
+```json
+{
+  "id": "T202610190001",
+  "project_path": "D:\\Work\\MyApp",
+  "project_name": "MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "description": "更新后的任务描述",
+  "status": "in_progress",
+  "priority": "urgent",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑",
+  "created_at": 1792475858231,
+  "updated_at": 1792476758231,
+  "closed_at": null
+}
+```
+
+---
+
+### 6. 原子追加备注 (Append Notes)
+- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}/notes`
+- **请求方式**：`POST`
+- **请求头**：`Content-Type: application/json`
+- **说明**：在现有 `agent_notes` 末尾原子换行追加新内容，不覆盖既有历史备注
+- **请求入参（Body JSON）**：
+```json
+{
+  "note": "基准测试完成：引入本地 LRU 缓存后延迟下降 35%"
+}
+```
+- **响应出参（200 OK）**：
+```json
+{
+  "id": "T202610190001",
+  "project_path": "D:\\Work\\MyApp",
+  "project_name": "MyApp",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "description": "更新后的任务描述",
+  "status": "in_progress",
+  "priority": "urgent",
+  "file_path": "src/middleware/auth.go",
+  "line_start": 42,
+  "line_end": 65,
+  "code_snippet": "token := db.Query(ctx, sql)",
+  "agent_notes": "建议引入本地 LRU 缓存或批量校验逻辑\n基准测试完成：引入本地 LRU 缓存后延迟下降 35%",
+  "created_at": 1792475858231,
+  "updated_at": 1792477058231,
+  "closed_at": null
+}
+```
+
+---
+
+### 通用错误出参
+
+所有任务接口失败时返回统一 JSON（HTTP 状态码见括号）：
+
+```json
+{
+  "success": false,
+  "error": "project_path is required and must be an absolute path"
+}
+```
+
+常见状态码：`400` 参数校验失败（路径非绝对、`status`/`priority` 取值非法、`notes` 为空等）；`404` 任务不存在；`405` 方法不允许；`500` 服务内部错误。
+
+---
+
+### PowerShell 调用示例
 
 ```powershell
 $base = 'http://127.0.0.1:3333'
 $q = [uri]::EscapeDataString('D:\Work\MyApp')
 
-# 列表（本工程 / 全部工程）
+# 列表（本工程任务）
 Invoke-RestMethod "$base/api/agent/tasks?project_path=$q"
-Invoke-RestMethod "$base/api/agent/tasks?all=true&status=todo,in_progress&sort=priority"
+Invoke-RestMethod "$base/api/agent/tasks?project_path=$q&status=todo&priority=high"
 
 # 新建
 $body = @{

@@ -199,6 +199,14 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 	if relPath == "/tasks" {
 		if r.Method == http.MethodGet {
 			q := r.URL.Query()
+			if len(q["status"]) > 1 {
+				boardSendError(w, http.StatusBadRequest, "status filter only allows a single value")
+				return
+			}
+			if len(q["priority"]) > 1 {
+				boardSendError(w, http.StatusBadRequest, "priority filter only allows a single value")
+				return
+			}
 			allBool := false
 			if b, ok := parseBoolParam(q.Get("all")); ok && b {
 				allBool = true

@@ -67,35 +67,6 @@ func agentReadJSONBody(r *http.Request) (map[string]any, error) {
 	return obj, nil
 }
 
-func agentParseListPaging(q url.Values) (limit, offset int, err error) {
-	limit = 500
-	offset = 0
-
-	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
-		parsed, parseErr := strconv.Atoi(raw)
-		if parseErr != nil {
-			return 0, 0, newValidationError("Invalid limit %q: expected an integer", raw)
-		}
-		if parsed < 1 || parsed > 500 {
-			return 0, 0, newValidationError("Invalid limit %d: must be between 1 and 500", parsed)
-		}
-		limit = parsed
-	}
-
-	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
-		parsed, parseErr := strconv.Atoi(raw)
-		if parseErr != nil {
-			return 0, 0, newValidationError("Invalid offset %q: expected an integer", raw)
-		}
-		if parsed < 0 {
-			return 0, 0, newValidationError("Invalid offset %d: must not be negative", parsed)
-		}
-		offset = parsed
-	}
-
-	return limit, offset, nil
-}
-
 func agentPrepareCreatePayload(body map[string]any) (map[string]any, error) {
 	canonical := canonicalize(body)
 
@@ -154,14 +125,9 @@ func handleAgentAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			agentSendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
 			return
 		}
-		dbPath := ""
-		if store != nil {
-			dbPath = store.FilePath
-		}
 		payload := map[string]any{
 			"success": true,
 			"version": appVersion(),
-			"db":      dbPath,
 		}
 		if store == nil {
 			payload["success"] = false
@@ -183,40 +149,29 @@ func handleAgentAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 	if relPath == "/tasks" {
 		if r.Method == http.MethodGet {
 			q := r.URL.Query()
-			allBool := false
-			if b, ok := parseBoolParam(q.Get("all")); ok && b {
-				allBool = true
+			if len(q["status"]) > 1 {
+				agentSendError(w, http.StatusBadRequest, "status filter only allows a single value")
+				return
 			}
-			search := q.Get("search")
-			if search == "" {
-				search = q.Get("q")
+			if len(q["priority"]) > 1 {
+				agentSendError(w, http.StatusBadRequest, "priority filter only allows a single value")
+				return
 			}
 			projParam := q.Get("project_path")
 			if projParam == "" {
 				projParam = q.Get("projectPath")
 			}
-			opts := ListOptions{
-				Status:   q.Get("status"),
-				Priority: q.Get("priority"),
-				Search:   search,
-				Sort:     q.Get("sort"),
-				All:      allBool,
-			}
-			if !allBool {
-				scope, err := NormalizeProjectPath(projParam)
-				if err != nil {
-					agentSendError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-				opts.ProjectPath = scope
-			}
-			limit, offset, err := agentParseListPaging(q)
+			scope, err := NormalizeProjectPath(projParam)
 			if err != nil {
 				agentSendError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			opts.Limit = limit
-			opts.Offset = offset
+			opts := ListOptions{
+				ProjectPath: scope,
+				Status:      q.Get("status"),
+				Priority:    q.Get("priority"),
+				Limit:       500,
+			}
 			tasks, err := store.ListTasks(opts)
 			if err != nil {
 				if IsValidationError(err) {

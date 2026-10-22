@@ -112,51 +112,6 @@ type Task struct {
 	ClosedAt    *int64  `json:"closed_at"`
 }
 
-// MarshalJSON emits the snake_case fields plus the camelCase aliases that
-// src/db.js produced, so existing clients keep working.
-//
-// Shape (matches the Node response byte for byte):
-//
-//	{ ..., "projectPath": ..., "createdAt": ..., "closedAt": ... }
-func (t *Task) MarshalJSON() ([]byte, error) {
-	if t == nil {
-		return []byte("null"), nil
-	}
-
-	// Alias for the struct without the custom marshaller.
-	type taskAlias Task
-
-	base, err := json.Marshal((*taskAlias)(t))
-	if err != nil {
-		return nil, err
-	}
-
-	extras, err := json.Marshal([]any{map[string]any{ //nolint:gosec // fixed key set
-		"projectPath": t.ProjectPath,
-		"projectName": t.ProjectName,
-		"filePath":    t.FilePath,
-		"lineStart":   t.LineStart,
-		"lineEnd":     t.LineEnd,
-		"codeSnippet": t.CodeSnippet,
-		"agentNotes":  t.AgentNotes,
-		"createdAt":   t.CreatedAt,
-		"updatedAt":   t.UpdatedAt,
-		"closedAt":    t.ClosedAt,
-	}})
-	if err != nil {
-		return nil, err
-	}
-	// extras is a one-element array: strip the brackets to splice the object in.
-	extras = extras[1 : len(extras)-1]
-
-	// Splice the alias object: drop the trailing '}' and append.
-	merged := make([]byte, 0, len(base)+len(extras))
-	merged = append(merged, base[:len(base)-1]...)
-	merged = append(merged, ',')
-	merged = append(merged, extras[1:]...)
-	return merged, nil
-}
-
 // Project is a per-project aggregate used by the projects view.
 type Project struct {
 	Path       string `json:"path"`
@@ -966,28 +921,28 @@ func (s *Store) ListTasks(opts ListOptions) ([]Task, error) {
 		args = append(args, target)
 	}
 
-	if statuses, ok := splitList(opts.Status); ok {
-		for _, st := range statuses {
-			if _, err := normalizeStatus(st, ""); err != nil {
-				return nil, err
-			}
+	if raw := strings.TrimSpace(opts.Status); raw != "" {
+		if strings.Contains(raw, ",") {
+			return nil, newValidationError("status filter only allows a single value")
 		}
-		where = append(where, `status IN (`+placeholders(len(statuses))+`)`)
-		for _, st := range statuses {
-			args = append(args, st)
+		st, err := normalizeStatus(raw, "")
+		if err != nil {
+			return nil, err
 		}
+		where = append(where, "status = ?")
+		args = append(args, st)
 	}
 
-	if priorities, ok := splitList(opts.Priority); ok {
-		for _, pr := range priorities {
-			if _, err := normalizePriority(pr, ""); err != nil {
-				return nil, err
-			}
+	if raw := strings.TrimSpace(opts.Priority); raw != "" {
+		if strings.Contains(raw, ",") {
+			return nil, newValidationError("priority filter only allows a single value")
 		}
-		where = append(where, `priority IN (`+placeholders(len(priorities))+`)`)
-		for _, pr := range priorities {
-			args = append(args, pr)
+		pr, err := normalizePriority(raw, "")
+		if err != nil {
+			return nil, err
 		}
+		where = append(where, "priority = ?")
+		args = append(args, pr)
 	}
 
 	if term := strings.TrimSpace(opts.Search); term != "" {
@@ -1529,31 +1484,6 @@ func normalizePriority(value any, fallback string) (string, error) {
 		}
 	}
 	return "", newValidationError("Invalid priority %q. Expected one of: %s", value, strings.Join(Priorities, ", "))
-}
-
-func splitList(value string) ([]string, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil, false
-	}
-	parts := strings.Split(trimmed, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return nil, false
-	}
-	return out, true
-}
-
-func placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
 
 func validateLineRange(start, end *int64) error {

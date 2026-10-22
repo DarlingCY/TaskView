@@ -848,13 +848,18 @@ func TestListTasksFilters(t *testing.T) {
 	count(ListOptions{ProjectPath: dir, Status: "done"}, 1, "status=done")
 	count(ListOptions{ProjectPath: dir, Status: "DONE"}, 1, "status case-insensitive")
 	count(ListOptions{ProjectPath: dir, Priority: "urgent"}, 1, "priority=urgent")
-	count(ListOptions{ProjectPath: dir, Status: "todo,done"}, 2, "status list")
 	count(ListOptions{ProjectPath: dir, Search: "auth"}, 1, "search title")
 	count(ListOptions{ProjectPath: dir, Search: "login"}, 1, "search description")
 	count(ListOptions{ProjectPath: dir, Search: "readme"}, 1, "search file")
 	count(ListOptions{ProjectPath: dir, Search: "docs"}, 1, "search case-insensitive")
 	count(ListOptions{ProjectPath: dir, Search: "nothing here"}, 0, "search miss")
 
+	if _, err := store.ListTasks(ListOptions{ProjectPath: dir, Status: "todo,done"}); !IsValidationError(err) {
+		t.Errorf("multiple statuses rejected: err = %v, want ValidationError", err)
+	}
+	if _, err := store.ListTasks(ListOptions{ProjectPath: dir, Priority: "low,urgent"}); !IsValidationError(err) {
+		t.Errorf("multiple priorities rejected: err = %v, want ValidationError", err)
+	}
 	if _, err := store.ListTasks(ListOptions{ProjectPath: dir, Status: "bogus"}); !IsValidationError(err) {
 		t.Errorf("invalid status filter: err = %v, want ValidationError", err)
 	}
@@ -1110,15 +1115,10 @@ func TestOptionalFieldsMarshalAsExplicitNull(t *testing.T) {
 		}
 	}
 
-	// The camelCase aliases mirror the same nulls.
+	// The camelCase aliases must NOT be present.
 	for _, key := range []string{"filePath", "codeSnippet", "agentNotes", "lineStart", "lineEnd", "closedAt"} {
-		raw, ok := got[key]
-		if !ok {
-			t.Errorf("alias %q was omitted", key)
-			continue
-		}
-		if string(raw) != "null" {
-			t.Errorf("alias %q = %s, want null", key, raw)
+		if _, ok := got[key]; ok {
+			t.Errorf("alias %q should not be present", key)
 		}
 	}
 
@@ -1491,27 +1491,21 @@ func TestTaskMarshalJSONShape(t *testing.T) {
 			t.Errorf("missing snake_case key %q in %s", key, encoded)
 		}
 	}
-	// camelCase aliases
+	// camelCase aliases should NOT be present
 	for _, key := range []string{"projectPath", "projectName", "filePath", "lineStart", "lineEnd",
 		"codeSnippet", "agentNotes", "createdAt", "updatedAt", "closedAt"} {
-		if _, ok := got[key]; !ok {
-			t.Errorf("missing camelCase alias %q in %s", key, encoded)
+		if _, ok := got[key]; ok {
+			t.Errorf("unexpected camelCase alias %q in %s", key, encoded)
 		}
 	}
 
-	if got["projectPath"] != got["project_path"] {
-		t.Errorf("projectPath alias mismatch")
-	}
-	if got["closedAt"] == nil {
-		t.Error("closedAt should be set for a done task")
+	if got["closed_at"] == nil {
+		t.Error("closed_at should be set for a done task")
 	}
 
-	// code_snippet was never provided: both spellings must be present as null.
+	// code_snippet was never provided: must be present as null.
 	if value, ok := got["code_snippet"]; !ok || value != nil {
 		t.Errorf("code_snippet = %v (present=%v), want explicit null", value, ok)
-	}
-	if value, ok := got["codeSnippet"]; !ok || value != nil {
-		t.Errorf("codeSnippet = %v (present=%v), want explicit null", value, ok)
 	}
 }
 

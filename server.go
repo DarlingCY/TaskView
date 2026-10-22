@@ -321,14 +321,9 @@ func CreateApp(store *Store, staticFS fs.FS) http.Handler {
 				sendError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed", r.Method))
 				return
 			}
-			dbPath := ""
-			if store != nil {
-				dbPath = store.FilePath
-			}
 			payload := map[string]any{
 				"success": true,
 				"version": appVersion(),
-				"db":      dbPath,
 			}
 			// A health check that never touches the database would report a
 			// healthy service that cannot serve a single task.

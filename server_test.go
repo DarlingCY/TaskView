@@ -224,8 +224,8 @@ func TestAPIEndpoints(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 				t.Fatalf("failed to parse json: %v", err)
 			}
-			if res["success"] != true || res["db"] != store.FilePath {
-				t.Fatalf("unexpected response: %v", res)
+			if res["success"] != true || res["db"] != nil {
+				t.Fatalf("unexpected response (db should not be returned): %v", res)
 			}
 			if res["version"] != appVersion() {
 				t.Fatalf("version = %v, want %q", res["version"], appVersion())
@@ -325,9 +325,9 @@ func TestBoardTasksCRUD(t *testing.T) {
 		if task["title"] != "HTTP Test Task" || task["priority"] != "high" {
 			t.Fatalf("task fields mismatch: %v", task)
 		}
-		// Verify camelCase alias
-		if task["projectPath"] == nil || task["createdAt"] == nil {
-			t.Fatalf("missing camelCase aliases in json: %v", task)
+		// Verify camelCase alias is removed
+		if task["projectPath"] != nil || task["createdAt"] != nil {
+			t.Fatalf("camelCase aliases should not be present in json: %v", task)
 		}
 		if task["project_path"] != projectPath {
 			t.Fatalf("project_path = %v, want %q", task["project_path"], projectPath)
@@ -503,7 +503,7 @@ func TestAgentTasksCRUD(t *testing.T) {
 	var createdID string
 
 	t.Run("GET /api/agent/tasks returns [] on empty store", func(t *testing.T) {
-		req := testReq(http.MethodGet, "/api/agent/tasks?all=true", nil)
+		req := testReq(http.MethodGet, "/api/agent/tasks?project_path="+url.QueryEscape(projectPath), nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -624,6 +624,16 @@ func TestAPIIsolation(t *testing.T) {
 			t.Fatalf("expected 404 on board /notes, got %d", rec.Code)
 		}
 	})
+
+	t.Run("Agent cannot query with all=true without project_path", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks?all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for agent tasks with all=true, got %d", rec.Code)
+		}
+	})
 }
 
 func TestMalformedAndValidation(t *testing.T) {
@@ -682,59 +692,111 @@ func TestMalformedAndValidation(t *testing.T) {
 func TestFiltersAndSearch(t *testing.T) {
 	store := newTestServerStore(t)
 	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
 
-	_, err := store.CreateTask(map[string]any{"title": "Search Alpha", "status": "todo", "priority": "high"})
+	_, err := store.CreateTask(map[string]any{"title": "Search Alpha", "status": "todo", "priority": "high", "project_path": projectPath})
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
-	_, err = store.CreateTask(map[string]any{"title": "Search Beta", "status": "in_progress", "priority": "medium"})
+	_, err = store.CreateTask(map[string]any{"title": "Search Beta", "status": "in_progress", "priority": "medium", "project_path": projectPath})
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
-	_, err = store.CreateTask(map[string]any{"title": "Search Gamma", "status": "done", "priority": "low"})
+	_, err = store.CreateTask(map[string]any{"title": "Search Gamma", "status": "done", "priority": "low", "project_path": projectPath})
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
+
+	t.Run("board filter by all=true", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var tasks []map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+		if len(tasks) != 3 {
+			t.Fatalf("expected 3 tasks, got %d", len(tasks))
+		}
+	})
+
+	t.Run("board filter by status", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?status=in_progress&all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		var tasks []map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+		if len(tasks) != 1 || tasks[0]["title"] != "Search Beta" {
+			t.Fatalf("unexpected filtered tasks: %v", tasks)
+		}
+	})
+
+	t.Run("board filter by search query", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?q=Gamma&all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		var tasks []map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+		if len(tasks) != 1 || tasks[0]["title"] != "Search Gamma" {
+			t.Fatalf("unexpected search results: %v", tasks)
+		}
+	})
+
+	t.Run("agent filter by status with project_path", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks?project_path="+url.QueryEscape(projectPath)+"&status=in_progress", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var tasks []map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
+		if len(tasks) != 1 || tasks[0]["title"] != "Search Beta" {
+			t.Fatalf("unexpected filtered tasks: %v", tasks)
+		}
+	})
 
 	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
-		t.Run("filter by all=true "+prefix, func(t *testing.T) {
-			req := testReq(http.MethodGet, prefix+"?all=true", nil)
+		t.Run("single status and priority "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+"&status=todo&priority=high", nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", rec.Code)
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 			}
 			var tasks []map[string]any
-			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
-			if len(tasks) != 3 {
-				t.Fatalf("expected 3 tasks, got %d", len(tasks))
+			if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+				t.Fatalf("failed to parse tasks: %v", err)
 			}
-		})
-
-		t.Run("filter by status "+prefix, func(t *testing.T) {
-			req := testReq(http.MethodGet, prefix+"?status=in_progress&all=true", nil)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			var tasks []map[string]any
-			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
-			if len(tasks) != 1 || tasks[0]["title"] != "Search Beta" {
+			if len(tasks) != 1 || tasks[0]["title"] != "Search Alpha" {
 				t.Fatalf("unexpected filtered tasks: %v", tasks)
 			}
 		})
 
-		t.Run("filter by search query "+prefix, func(t *testing.T) {
-			req := testReq(http.MethodGet, prefix+"?q=Gamma&all=true", nil)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+		for _, query := range []string{
+			"&status=todo,in_progress",
+			"&priority=low,high",
+			"&status=todo&status=in_progress",
+			"&priority=low&priority=high",
+			"&status=todo&status=todo",
+			"&priority=high&priority=high",
+		} {
+			t.Run("reject multiple values "+prefix+query, func(t *testing.T) {
+				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+query, nil)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
 
-			var tasks []map[string]any
-			_ = json.Unmarshal(rec.Body.Bytes(), &tasks)
-			if len(tasks) != 1 || tasks[0]["title"] != "Search Gamma" {
-				t.Fatalf("unexpected search results: %v", tasks)
-			}
-		})
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+		}
 	}
 }
 
@@ -919,118 +981,121 @@ func TestCreateTaskRequiresAnAbsoluteProjectPath(t *testing.T) {
 // TestTaskListingRequiresAnExplicitScope covers the listing contract: without
 // all=true the project has to be named, and it has to be absolute.
 func TestTaskListingRequiresAnExplicitScope(t *testing.T) {
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
+
 	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
 		prefix := prefix
-		t.Run(prefix, func(t *testing.T) {
-			store := newTestServerStore(t)
-			handler := CreateApp(store, testStaticFS())
-			projectPath := filepath.Join(t.TempDir(), "my-app")
+		t.Run("no scope rejected "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-			t.Run("no scope rejected", func(t *testing.T) {
-				req := testReq(http.MethodGet, prefix, nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
 
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-				}
-			})
+		t.Run("relative scope rejected "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?project_path=relative/path", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-			t.Run("relative scope rejected", func(t *testing.T) {
-				req := testReq(http.MethodGet, prefix+"?project_path=relative/path", nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
 
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-				}
-			})
+		t.Run("absolute scope accepted "+prefix, func(t *testing.T) {
+			req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath), nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-			t.Run("absolute scope accepted", func(t *testing.T) {
-				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath), nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-
-				if rec.Code != http.StatusOK {
-					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-				}
-				var tasks []map[string]any
-				if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
-					t.Fatalf("failed to parse tasks: %v", err)
-				}
-				if len(tasks) != 0 {
-					t.Fatalf("expected no tasks, got %d", len(tasks))
-				}
-			})
-
-			t.Run("all=true lists every project", func(t *testing.T) {
-				req := testReq(http.MethodGet, prefix+"?all=true", nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-
-				if rec.Code != http.StatusOK {
-					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-				}
-			})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var tasks []map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+				t.Fatalf("failed to parse tasks: %v", err)
+			}
+			if len(tasks) != 0 {
+				t.Fatalf("expected no tasks, got %d", len(tasks))
+			}
 		})
 	}
+
+	t.Run("board all=true lists every project", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/board/tasks?all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("agent all=true rejected without project_path", func(t *testing.T) {
+		req := testReq(http.MethodGet, "/api/agent/tasks?all=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for agent with all=true, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
-// TestTaskListingPaging checks the bounded page size and the offset.
+// TestTaskListingPaging checks the bounded page size and the offset for board queries.
 func TestTaskListingPaging(t *testing.T) {
-	for _, prefix := range []string{"/api/agent/tasks", "/api/board/tasks"} {
-		prefix := prefix
-		t.Run(prefix, func(t *testing.T) {
-			store := newTestServerStore(t)
-			handler := CreateApp(store, testStaticFS())
-			projectPath := filepath.Join(t.TempDir(), "my-app")
+	store := newTestServerStore(t)
+	handler := CreateApp(store, testStaticFS())
+	projectPath := filepath.Join(t.TempDir(), "my-app")
 
-			for i := 0; i < 5; i++ {
-				if _, err := store.CreateTask(map[string]any{
-					"title":        fmt.Sprintf("task %d", i),
-					"project_path": projectPath,
-				}); err != nil {
-					t.Fatalf("CreateTask: %v", err)
-				}
-			}
+	for i := 0; i < 5; i++ {
+		if _, err := store.CreateTask(map[string]any{
+			"title":        fmt.Sprintf("task %d", i),
+			"project_path": projectPath,
+		}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+	}
 
-			page := func(query string) []map[string]any {
-				t.Helper()
-				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+query, nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-				if rec.Code != http.StatusOK {
-					t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-				}
-				var tasks []map[string]any
-				if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
-					t.Fatalf("failed to parse tasks: %v", err)
-				}
-				return tasks
-			}
+	page := func(query string) []map[string]any {
+		t.Helper()
+		req := testReq(http.MethodGet, "/api/board/tasks?project_path="+url.QueryEscape(projectPath)+query, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var tasks []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil {
+			t.Fatalf("failed to parse tasks: %v", err)
+		}
+		return tasks
+	}
 
-			if got := page("&limit=2"); len(got) != 2 {
-				t.Errorf("limit=2 returned %d tasks, want 2", len(got))
-			}
-			if got := page("&limit=2&offset=2"); len(got) != 2 {
-				t.Errorf("limit=2&offset=2 returned %d tasks, want 2", len(got))
-			}
-			if got := page("&limit=2&offset=4"); len(got) != 1 {
-				t.Errorf("limit=2&offset=4 returned %d tasks, want 1", len(got))
-			}
-			if got := page("&limit=2&offset=99"); len(got) != 0 {
-				t.Errorf("offset past the end returned %d tasks, want 0", len(got))
-			}
+	if got := page("&limit=2"); len(got) != 2 {
+		t.Errorf("limit=2 returned %d tasks, want 2", len(got))
+	}
+	if got := page("&limit=2&offset=2"); len(got) != 2 {
+		t.Errorf("limit=2&offset=2 returned %d tasks, want 2", len(got))
+	}
+	if got := page("&limit=2&offset=4"); len(got) != 1 {
+		t.Errorf("limit=2&offset=4 returned %d tasks, want 1", len(got))
+	}
+	if got := page("&limit=2&offset=99"); len(got) != 0 {
+		t.Errorf("offset past the end returned %d tasks, want 0", len(got))
+	}
 
-			for _, bad := range []string{"&limit=0", "&limit=501", "&limit=abc", "&offset=-1", "&offset=abc"} {
-				req := testReq(http.MethodGet, prefix+"?project_path="+url.QueryEscape(projectPath)+bad, nil)
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-				if rec.Code != http.StatusBadRequest {
-					t.Errorf("%s: expected 400, got %d", bad, rec.Code)
-				}
-			}
-		})
+	for _, bad := range []string{"&limit=0", "&limit=501", "&limit=abc", "&offset=-1", "&offset=abc"} {
+		req := testReq(http.MethodGet, "/api/board/tasks?project_path="+url.QueryEscape(projectPath)+bad, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", bad, rec.Code)
+		}
 	}
 }
 

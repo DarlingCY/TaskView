@@ -44,16 +44,16 @@ $health.version   # 运行中的版本
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/agent/health` | 健康检查。`200` 返回 `{success,version,db}`；数据库不可读时返回 `503` |
-| `GET` | `/api/agent/tasks` | 任务列表。需要 `project_path`（绝对路径）或 `all=true` |
+| `GET` | `/api/agent/health` | 健康检查。`200` 返回 `{success,version}`；服务未就绪时返回 `503` |
+| `GET` | `/api/agent/tasks` | 任务列表。需要 `project_path`（绝对路径） |
 | `POST` | `/api/agent/tasks` | 新建任务，返回 `201` 与任务对象 |
 | `GET` | `/api/agent/tasks/{id}` | 任务详情 |
-| `PATCH` `PUT` | `/api/agent/tasks/{id}` | 更新任务（只接受可写字段） |
+| `PATCH` | `/api/agent/tasks/{id}` | 更新任务（只接受可写字段） |
 | `POST` | `/api/agent/tasks/{id}/notes` | **原子追加**一条备注，body 为 `{"note":"…"}`，返回更新后的任务 |
 
 ### 任务字段
 
-`id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`created_at`、`updated_at`、`closed_at`（响应同时带 camelCase 别名）。
+`id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`created_at`、`updated_at`、`closed_at`。
 
 - `status`：`backlog` \| `todo` \| `in_progress` \| `done`（默认 `todo`）
 - `priority`：`low` \| `medium` \| `high` \| `urgent`（默认 `medium`）
@@ -64,19 +64,15 @@ $health.version   # 运行中的版本
 
 | 参数 | 说明 |
 | --- | --- |
-| `project_path` | 工程绝对路径（别名 `projectPath`）；除 `all=true` 外必填 |
-| `all` | `true` 表示忽略工程过滤，返回全部工程的任务 |
-| `search` | 在标题、描述、备注、文件路径中做子串匹配（别名 `q`） |
-| `status` / `priority` | 逗号分隔的多值过滤 |
-| `sort` | `updated` \| `created` \| `priority` \| `title` |
-| `limit` / `offset` | 分页，`limit` 范围 `1..500`（默认 `500`），`offset` 默认 `0`；按 `offset` 递增翻页，返回条数小于 `limit` 即结束 |
+| `project_path` | 工程绝对路径，必填 |
+| `status` / `priority` | 单值过滤（可选），不支持逗号分隔或重复传入同名参数 |
 
 ```powershell
 $base = 'http://127.0.0.1:3333'
 $project = 'D:\Work\MyApp'
 
 Invoke-RestMethod "$base/api/agent/tasks?project_path=$([uri]::EscapeDataString($project))"
-Invoke-RestMethod "$base/api/agent/tasks?all=true&status=todo,in_progress&priority=high&search=cache&sort=priority"
+Invoke-RestMethod "$base/api/agent/tasks?project_path=$([uri]::EscapeDataString($project))&status=todo&priority=high"
 ```
 
 ### 新建任务
