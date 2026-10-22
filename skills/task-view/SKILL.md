@@ -1,13 +1,13 @@
 ---
 name: task-view
-description: Create, track, query, update, and manage project tasks, todos, and development progress. Uses the local TaskView HTTP API on 127.0.0.1 with a local SQLite database and a local Web Kanban board. Trigger whenever managing project tasks, checking or creating todos, updating task status, or following up on progress through TaskView.
+description: 项目任务管理：创建、查询、澄清和更新任务，管理待办与进度。用于用户提出“新增任务”等任务记录请求，以及讨论已有任务、确认任务需求或调整状态的场景，无需用户明确提及 TaskView。通过本地 TaskView HTTP API 操作。
 ---
 
 # TaskView Skill
 
 TaskView 是面向开发者与 AI Agent 协作的本地项目任务管理系统。
 
-在日常开发与项目协作过程中，所有开发任务、待办事项、优化改进与后续计划，均可通过 TaskView 进行统一管理。开发者与 Agent 可以便捷地记录任务、跟踪进度、原子流转状态，并在本地 Web 看板中实时可视化呈现。
+TaskView 用于记录项目任务、澄清需求、更新状态和追加进展，并通过本地 Web 看板展示。
 
 ---
 
@@ -23,16 +23,25 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 - 列表必须显式给出工程作用域：`project_path=<绝对路径>`。
 - 任务 ID 全局唯一（形如 `T202610190001`）。改动前核对详情里的 `project_path`，切勿误操作其他工程的任务。
 
-### 3. 需求范围与记录要素（Prevent Scope Creep）
+### 3. 新建前澄清与状态选择
 
 - 以用户当前明确要求为主任务，不擅自扩展范围。
-- 待办与计划任务：记录为 `backlog` 或 `todo`。写清标题、描述、相关文件行号（如有）与真实代码依据，区分已验证事实与推测分析。
+- “新增任务”表示登记任务，不表示立即执行。
+- 创建前根据用户消息、已有对话及必要的只读检查，确认任务目标、范围与预期结果。
+- 存在会影响实现或验收的未决问题时，先向用户集中提问，等待回答后再创建；不要直接存入待整理来代替澄清。
+- 已明确的信息不重复询问。需求清楚后，创建时显式设置 `status: "todo"`。
+- 仅当用户明确要求暂存想法、保持待整理，或选择暂不澄清时，才设置 `status: "backlog"`，并记录尚待确认的问题。
+- 描述记录已确认的需求；文件行号与代码依据仅在相关且已核实时填写，不把建议写成用户已确认的决定。
 - 未实际完成并验证的修改，不要把任务标记为 `done`。
 
 ### 4. 去重与更新（De-duplication）
 
 - 新建前先查询当前工程既有任务：`GET /api/agent/tasks?project_path=<工程绝对路径>`，核对是否已有同类记录。
 - 同类任务使用 `POST /api/agent/tasks/{id}/notes`（body `{"note":"…"}`）原子追加进展，避免重复创建。
+- 沟通已有任务前，读取详情并核对工程、内容和当前状态。
+- 当前沟通解决了待整理任务的关键问题后，更新 description 中的需求结论、追加沟通记录，并调用 PATCH 将 `backlog` 改为 `todo`；仅追加 notes 不会改变状态。用户明确要求继续保留待整理时，遵从其选择。
+- 仍有关键问题未解决时，保留 `backlog` 并说明具体问题。不因追加备注而重置 `in_progress` 或 `done`。
+- 根据接口实际返回核实更新结果，回复任务 ID、最终状态和剩余问题；部分操作失败时如实说明。
 - 除非用户明确要求，否则不要删除任务。
 
 ### 5. 安全与隐私
