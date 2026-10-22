@@ -139,6 +139,7 @@ function elementFor(key) {
 
 let mockTasks = [];
 let mockProjects = [];
+let mockNetworkFailure = false;
 let mockStats = { total: 0, backlog: 0, todo: 0, in_progress: 0, review: 0, done: 0 };
 
 const documentStub = {
@@ -164,6 +165,7 @@ const sandbox = {
   },
   CSS: { escape: function (v) { return String(v); } },
   fetch: function (url) {
+    if (mockNetworkFailure) return Promise.reject(new Error('connection refused'));
     const target = String(url);
     let payload = [];
     if (target.indexOf('/api/board/projects') >= 0) {
@@ -276,6 +278,25 @@ tv.loadAll().then(function () {
   });
 }).then(function (prevCount) {
   check(boardRenderCount === prevCount + 1, 'loadAll({ force: true }) did NOT force renderBoard (count: ' + boardRenderCount + ' vs ' + (prevCount + 1) + ')');
+}).then(async function () {
+  // An error panel replaces the rendered view even if task data stays unchanged.
+  for (const view of ['board', 'list']) {
+    tv.state.view = view;
+    tv.renderAll();
+    const element = view === 'board' ? tv.boardEl : tv.listEl;
+    const expectedHtml = element.innerHTML;
+
+    mockNetworkFailure = true;
+    await tv.loadAll({ silent: true });
+    check(element.innerHTML.indexOf('连接断开') >= 0, view + ' did not show the network error panel');
+    check(tv.state.viewRendered === false, view + ' error panel was treated as rendered task data');
+
+    mockNetworkFailure = false;
+    await tv.loadAll({ silent: true });
+    check(tv.state.error === null, view + ' did not clear the network error after recovery');
+    check(element.innerHTML === expectedHtml, view + ' did not restore unchanged tasks after silent recovery');
+    check(tv.state.viewRendered === true, view + ' was not marked rendered after recovery');
+  }
 
   if (failures.length) {
     console.error('FAIL: ' + failures.length + ' assertion(s) failed');

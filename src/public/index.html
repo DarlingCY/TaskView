@@ -1412,6 +1412,7 @@
 
   function renderLoadState() {
     if (state.error) {
+      state.viewRendered = false;
       const panel =
         '<div class="m-auto flex max-w-md flex-col items-center gap-4 rounded-2xl border border-urgent/30 bg-urgent/5 px-8 py-10 text-center">' +
           '<div class="grid h-12 w-12 place-items-center rounded-xl bg-urgent/12 text-urgent">' + icon('alert', 'h-6 w-6') + '</div>' +
