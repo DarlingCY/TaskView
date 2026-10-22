@@ -112,7 +112,7 @@ Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/notes" 
 
 ## 从源码构建
 
-需要 Go 1.26.5+ 与 Inno Setup 6。
+仅支持 Windows 构建。需要 Windows 10 或更高版本，以及 Go 1.26.5+ 与 Inno Setup 6。
 
 ```powershell
 pwsh -File ./scripts/build-windows.ps1            # 输出安装包至 dist\

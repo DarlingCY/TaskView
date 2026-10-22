@@ -53,10 +53,6 @@ func platformAutostartDefinition(managed, dataDir string, enabled bool) (string,
 	return taskXMLFor(managed, dataDir, scheduledTaskName(dataDir), enabled)
 }
 
-// platformAutostartSupported reports whether this platform can register a
-// login item.
-func platformAutostartSupported() bool { return true }
-
 func platformBinaryName() (string, error) { return windowsBinaryName, nil }
 
 // platformPostCopy is a no-op: Windows has no POSIX mode bits and execute rights

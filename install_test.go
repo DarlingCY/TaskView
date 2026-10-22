@@ -10,7 +10,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -194,9 +193,6 @@ func TestInstallIsIdempotentAndRegistersNoDuplicates(t *testing.T) {
 }
 
 func TestInstallPreservesAutostartOnPlainReinstall(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	home, _, runner := installEnv(t)
 
 	if _, err := Install(InstallOptions{Autostart: true}); err != nil {
@@ -233,9 +229,6 @@ func TestInstallPreservesAutostartOnPlainReinstall(t *testing.T) {
 }
 
 func TestInstallAutostartOnlyWhenRequested(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	_, _, runner := installEnv(t)
 
 	if _, err := Install(InstallOptions{Autostart: true}); err != nil {
@@ -247,9 +240,6 @@ func TestInstallAutostartOnlyWhenRequested(t *testing.T) {
 }
 
 func TestInstallDoesNotStartServer(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	_, _, runner := installEnv(t)
 
 	if _, err := Install(InstallOptions{Autostart: true}); err != nil {
@@ -387,9 +377,6 @@ func TestInstallFromInstalledBinaryIsIdempotent(t *testing.T) {
 }
 
 func TestInstallFromInstalledBinaryCanEnableAutostart(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	home, _, runner := installEnv(t)
 
 	if _, err := Install(InstallOptions{}); err != nil {
@@ -450,7 +437,7 @@ func TestInstallDoesNotModifyPATH(t *testing.T) {
 	installEnv(t)
 
 	before := os.Getenv("PATH")
-	if _, err := Install(InstallOptions{Autostart: platformAutostartSupported()}); err != nil {
+	if _, err := Install(InstallOptions{Autostart: true}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if after := os.Getenv("PATH"); after != before {
@@ -557,9 +544,6 @@ func TestUninstallStopsManagedServer(t *testing.T) {
 }
 
 func TestUninstallRemovesRegisteredTask(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	_, _, runner := installEnv(t)
 
 	if _, err := Install(InstallOptions{Autostart: true}); err != nil {
@@ -579,9 +563,6 @@ func TestUninstallRemovesRegisteredTask(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAutostartFailureReportsButKeepsBinary(t *testing.T) {
-	if !platformAutostartSupported() {
-		t.Skip("autostart unsupported on this platform")
-	}
 	home, _, runner := installEnv(t)
 	runner.setFailure(errors.New("ERROR: Access is denied."))
 
@@ -616,24 +597,6 @@ func TestAutostartFailureReportsButKeepsBinary(t *testing.T) {
 	if strings.Contains(msg, "--autostart") {
 		t.Errorf("error must not suggest a command line flag: %v", err)
 	}
-}
-
-func TestAutostartUnsupportedIsRejectedBeforeMutation(t *testing.T) {
-	if platformAutostartSupported() {
-		t.Skip("autostart is supported here")
-	}
-	home, _, _ := installEnv(t)
-
-	result, err := Install(InstallOptions{Autostart: true})
-	if !errors.Is(err, ErrAutostartUnsupported) {
-		t.Fatalf("err = %v, want ErrAutostartUnsupported", err)
-	}
-	if result != nil {
-		t.Errorf("result = %+v, want nil when nothing was installed", result)
-	}
-	// Nothing may be created before the rejection.
-	mustNotExist(t, filepath.Join(home, "bin"))
-	mustNotExist(t, filepath.Join(home, "install.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -684,7 +647,7 @@ func jsonString(s string) string {
 	return string(raw)
 }
 
-func TestSamePathIsOSAppropriate(t *testing.T) {
+func TestSamePathFoldsCase(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "taskview.exe")
 
@@ -695,13 +658,10 @@ func TestSamePathIsOSAppropriate(t *testing.T) {
 		t.Error("samePath should not match different files")
 	}
 
+	// Windows paths are case-insensitive.
 	upper := strings.ToUpper(a)
-	if runtime.GOOS == "windows" {
-		if !samePath(a, upper) {
-			t.Error("on windows, paths differing only in case must match")
-		}
-	} else if samePath(a, upper) && a != upper {
-		t.Errorf("on %s, comparison must be case sensitive", runtime.GOOS)
+	if !samePath(a, upper) {
+		t.Error("paths differing only in case must match")
 	}
 }
 
@@ -791,17 +751,6 @@ func TestManifestWriteIsAtomicAndPrivate(t *testing.T) {
 	for _, e := range entries {
 		if e.Name() != "install.json" {
 			t.Errorf("unexpected leftover file %q", e.Name())
-		}
-	}
-
-	// Owner-only permissions on Unix.
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(filepath.Join(home, "install.json"))
-		if err != nil {
-			t.Fatalf("Stat: %v", err)
-		}
-		if perm := info.Mode().Perm(); perm&0o077 != 0 {
-			t.Errorf("manifest mode = %o, want no group/other access", perm)
 		}
 	}
 

@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,12 +65,7 @@ func generateRandomHex(n int) (string, error) {
 }
 
 func absEqual(p1, p2 string) bool {
-	clean1 := filepath.Clean(p1)
-	clean2 := filepath.Clean(p2)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(clean1, clean2)
-	}
-	return clean1 == clean2
+	return strings.EqualFold(filepath.Clean(p1), filepath.Clean(p2))
 }
 
 // acquireProcessLock acquires an OS-held exclusive file lock on filename.

@@ -20,7 +20,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,14 +264,10 @@ func resolveProjectPath(input string) (string, error) {
 }
 
 // projectPathClause is the SQL predicate used to scope queries to one project.
-// Windows filesystems are case-insensitive, so the comparison folds case there;
-// every other OS compares exactly, since a POSIX volume may be case-sensitive.
-// Applying LOWER() everywhere would wrongly merge two distinct POSIX projects.
+//
+// Windows filesystems are case-insensitive, so the comparison folds case.
 func projectPathClause(column string) string {
-	if runtime.GOOS == "windows" {
-		return "LOWER(" + column + ") = LOWER(?)"
-	}
-	return column + " = ?"
+	return "LOWER(" + column + ") = LOWER(?)"
 }
 
 // NormalizeProjectPath validates a project path the caller has to name

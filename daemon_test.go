@@ -74,6 +74,34 @@ func setupDaemonTest(t *testing.T) string {
 	return tmpHome
 }
 
+func TestAbsEqualCleansAndFoldsCase(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "tasks.db")
+
+	// Identical paths match.
+	if !absEqual(a, a) {
+		t.Error("identical paths must match")
+	}
+
+	// Redundant separators and dot elements are cleaned away.
+	if !absEqual(a, filepath.Join(dir, ".", "tasks.db")) {
+		t.Error("paths that only differ in redundant elements must match")
+	}
+	if !absEqual(a, dir+string(filepath.Separator)+"tasks.db") {
+		t.Error("a trailing separator must not change the comparison")
+	}
+
+	// Windows paths are case-insensitive.
+	if !absEqual(a, strings.ToUpper(a)) {
+		t.Error("paths differing only in case must match")
+	}
+
+	// Genuinely different paths do not match.
+	if absEqual(a, filepath.Join(dir, "other.db")) {
+		t.Error("different files must not match")
+	}
+}
+
 func TestAcquireProcessLock(t *testing.T) {
 	tmpDir := t.TempDir()
 	lockPath := filepath.Join(tmpDir, "test.lock")

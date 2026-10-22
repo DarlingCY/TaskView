@@ -1,13 +1,13 @@
 ---
 name: task-view
-description: Record, track, and manage code optimizations, follow-up tasks, refactoring ideas, and latent bugs that cannot be addressed in the current turn. Uses the local TaskView HTTP API on 127.0.0.1 with a local SQLite database and a local Web Kanban board. Trigger when discovering secondary findings, deferred tech debt, or when managing tasks through TaskView.
+description: Create, track, query, update, and manage project tasks, todos, and development progress. Uses the local TaskView HTTP API on 127.0.0.1 with a local SQLite database and a local Web Kanban board. Trigger whenever managing project tasks, checking or creating todos, updating task status, or following up on progress through TaskView.
 ---
 
 # TaskView Skill
 
-TaskView 是面向开发者与 AI Agent 协作的本地任务与优化项跟踪系统。
+TaskView 是面向开发者与 AI Agent 协作的本地项目任务管理系统。
 
-当你在分析代码或执行开发任务时，经常会发现次要的性能瓶颈、代码异味、重构想法、潜在缺陷或后续待办。**切勿将这些次要发现遗落在对话文本中，也切勿擅自偏离主任务（避免范围蔓延 / Scope Creep）**。应将其作为待办任务沉淀到 TaskView 中，便于后续集中排期、跟进流转与在本地 Web 看板中可视化呈现。
+在日常开发与项目协作过程中，所有开发任务、待办事项、优化改进与后续计划，均可通过 TaskView 进行统一管理。开发者与 Agent 可以便捷地记录任务、跟踪进度、原子流转状态，并在本地 Web 看板中实时可视化呈现。
 
 ---
 
@@ -25,8 +25,8 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 
 ### 3. 需求范围与记录要素（Prevent Scope Creep）
 
-- 以用户当前明确要求为主任务，不擅自扩展或重构。
-- 次要优化、架构债务与缺陷：记录为 `backlog` 或 `todo`。写清标题、描述、文件行号与真实代码证据，区分已验证事实与推测分析。
+- 以用户当前明确要求为主任务，不擅自扩展范围。
+- 待办与计划任务：记录为 `backlog` 或 `todo`。写清标题、描述、相关文件行号（如有）与真实代码依据，区分已验证事实与推测分析。
 - 未实际完成并验证的修改，不要把任务标记为 `done`。
 
 ### 4. 去重与更新（De-duplication）
@@ -255,33 +255,3 @@ Base URL 固定为 `http://127.0.0.1:3333`。会话开始先调用 `GET /api/age
 ```
 
 常见状态码：`400` 参数校验失败（路径非绝对、`status`/`priority` 取值非法、`notes` 为空等）；`404` 任务不存在；`405` 方法不允许；`500` 服务内部错误。
-
----
-
-### PowerShell 调用示例
-
-```powershell
-$base = 'http://127.0.0.1:3333'
-$q = [uri]::EscapeDataString('D:\Work\MyApp')
-
-# 列表（本工程任务）
-Invoke-RestMethod "$base/api/agent/tasks?project_path=$q"
-Invoke-RestMethod "$base/api/agent/tasks?project_path=$q&status=todo&priority=high"
-
-# 新建
-$body = @{
-    project_path = 'D:\Work\MyApp'
-    title        = '重构 Auth 中间件的 Token 缓存'
-    description  = '高并发下每次请求都会回源数据库校验 Token'
-    file_path    = 'src\middleware\auth.go'
-    line_start   = 42
-    line_end     = 65
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks" -ContentType 'application/json' -Body $body
-
-# 推进状态 / 追加进展
-Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
-    -ContentType 'application/json' -Body (@{ status = 'in_progress' } | ConvertTo-Json)
-Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/notes" `
-    -ContentType 'application/json' -Body (@{ note = '基准测试完成：延迟下降 35%' } | ConvertTo-Json)
-```

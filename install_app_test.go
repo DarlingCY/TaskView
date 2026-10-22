@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,9 +31,6 @@ type installTestEnv struct {
 
 func newInstallTestEnv(t *testing.T) *installTestEnv {
 	t.Helper()
-	if runtime.GOOS != "windows" {
-		t.Skip("the installed application coordination is Windows-only")
-	}
 	root := t.TempDir()
 	// The installer transaction has to live in a temporary directory.
 	t.Setenv("TMP", root)

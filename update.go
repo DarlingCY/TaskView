@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,6 +48,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 // ---------------------------------------------------------------------------
@@ -393,11 +396,12 @@ func validInstallerName(name string, version stableVersion) bool {
 
 // defaultUpdateClient builds the client used in production.
 //
-// It honours the system proxy settings but never carries a token: there is no
-// Authorization header, no cookie jar and no credentials in any URL.
+// It honours the environment and Windows system proxy settings but never carries
+// a token: there is no Authorization header, no cookie jar and no credentials in
+// any URL.
 func defaultUpdateClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyFromEnvironment
+	transport.Proxy = resolveUpdateProxy
 	transport.TLSHandshakeTimeout = 15 * time.Second
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	transport.ExpectContinueTimeout = 5 * time.Second
@@ -405,6 +409,215 @@ func defaultUpdateClient() *http.Client {
 	// No client wide timeout: every request carries its own context deadline,
 	// and a large installer legitimately takes longer than an API call.
 	return &http.Client{Transport: transport}
+}
+
+// resolveUpdateProxy determines the proxy to use for updater requests.
+//
+// Precedence:
+//  1. Environment variables (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY).
+//  2. Windows Internet Settings (HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings).
+//
+// In all cases, local loopback (127.0.0.1, localhost, ::1) is never proxied.
+func resolveUpdateProxy(req *http.Request) (*url.URL, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+
+	// Always bypass loopback regardless of source.
+	if isLoopbackHost(req.URL.Hostname()) {
+		return nil, nil
+	}
+
+	// 1. Try environment variables first.
+	if proxyURL, err := envProxyFunc(req); err != nil {
+		return nil, err
+	} else if proxyURL != nil {
+		return proxyURL, nil
+	}
+
+	// 2. Fallback to Windows system proxy.
+	return resolveWindowsProxy(req.URL)
+}
+
+// envProxyFunc resolves environment proxy settings for a request.
+// Seam function overridable in tests.
+var envProxyFunc = func(req *http.Request) (*url.URL, error) {
+	scheme := strings.ToLower(req.URL.Scheme)
+	var proxyStr string
+	if scheme == "https" {
+		proxyStr = getEnvAny("HTTPS_PROXY", "https_proxy")
+	}
+	if proxyStr == "" {
+		proxyStr = getEnvAny("HTTP_PROXY", "http_proxy")
+	}
+	if proxyStr == "" {
+		proxyStr = getEnvAny("ALL_PROXY", "all_proxy")
+	}
+	proxyStr = strings.TrimSpace(proxyStr)
+	if proxyStr == "" {
+		return nil, nil
+	}
+
+	noProxy := getEnvAny("NO_PROXY", "no_proxy")
+	if shouldOverrideProxy(req.URL.Hostname(), noProxy) {
+		return nil, nil
+	}
+
+	if !strings.Contains(proxyStr, "://") {
+		proxyStr = "http://" + proxyStr
+	}
+	return url.Parse(proxyStr)
+}
+
+func getEnvAny(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// readWindowsProxyRegistry queries Windows Internet Settings from the current user's registry.
+// Seam function overridable in tests.
+var readWindowsProxyRegistry = func() (enabled bool, server string, override string, err error) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE)
+	if err != nil {
+		return false, "", "", err
+	}
+	defer k.Close()
+
+	enable, _, err := k.GetIntegerValue("ProxyEnable")
+	if err != nil || enable == 0 {
+		return false, "", "", nil
+	}
+
+	server, _, err = k.GetStringValue("ProxyServer")
+	if err != nil || strings.TrimSpace(server) == "" {
+		return false, "", "", nil
+	}
+
+	override, _, _ = k.GetStringValue("ProxyOverride")
+	return true, server, override, nil
+}
+
+func resolveWindowsProxy(targetURL *url.URL) (*url.URL, error) {
+	enabled, server, override, err := readWindowsProxyRegistry()
+	if err != nil || !enabled {
+		return nil, nil
+	}
+	return parseWindowsProxy(server, override, targetURL)
+}
+
+func parseWindowsProxy(serverStr, overrideStr string, targetURL *url.URL) (*url.URL, error) {
+	if targetURL == nil {
+		return nil, nil
+	}
+
+	host := targetURL.Hostname()
+	if isLoopbackHost(host) {
+		return nil, nil
+	}
+
+	if shouldOverrideProxy(host, overrideStr) {
+		return nil, nil
+	}
+
+	serverStr = strings.TrimSpace(serverStr)
+	if serverStr == "" {
+		return nil, nil
+	}
+
+	var proxyAddress string
+	if strings.Contains(serverStr, "=") {
+		// Multi-protocol format, e.g. "http=127.0.0.1:8080;https=127.0.0.1:8443;socks=..."
+		scheme := strings.ToLower(targetURL.Scheme)
+		if scheme == "" {
+			scheme = "https"
+		}
+		protoMap := make(map[string]string)
+		for _, part := range strings.Split(serverStr, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			eq := strings.IndexByte(part, '=')
+			if eq > 0 {
+				pProto := strings.ToLower(strings.TrimSpace(part[:eq]))
+				pAddr := strings.TrimSpace(part[eq+1:])
+				protoMap[pProto] = pAddr
+			}
+		}
+
+		if addr, ok := protoMap[scheme]; ok && addr != "" {
+			proxyAddress = addr
+		} else if addr, ok := protoMap["socks"]; ok && addr != "" {
+			if !strings.Contains(addr, "://") {
+				proxyAddress = "socks5://" + addr
+			} else {
+				proxyAddress = addr
+			}
+		} else {
+			return nil, nil
+		}
+	} else {
+		// Simple format, applies to all protocols.
+		proxyAddress = serverStr
+	}
+
+	if !strings.Contains(proxyAddress, "://") {
+		proxyAddress = "http://" + proxyAddress
+	}
+
+	return url.Parse(proxyAddress)
+}
+
+func shouldOverrideProxy(host, overrideStr string) bool {
+	overrideStr = strings.TrimSpace(overrideStr)
+	if overrideStr == "" {
+		return false
+	}
+
+	isLocalHost := !strings.Contains(host, ".") && net.ParseIP(host) == nil
+
+	entries := strings.FieldsFunc(overrideStr, func(r rune) bool {
+		return r == ';' || r == ' ' || r == '\t'
+	})
+
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.EqualFold(entry, "<local>") {
+			if isLocalHost {
+				return true
+			}
+			continue
+		}
+		if entry == "*" {
+			return true
+		}
+		if strings.HasPrefix(entry, "*.") {
+			suffix := entry[1:] // ".example.com"
+			if strings.HasSuffix(strings.ToLower(host), strings.ToLower(suffix)) {
+				return true
+			}
+		} else if strings.HasPrefix(entry, "*") {
+			suffix := entry[1:]
+			if strings.HasSuffix(strings.ToLower(host), strings.ToLower(suffix)) {
+				return true
+			}
+		} else if strings.HasSuffix(entry, "*") {
+			prefix := entry[:len(entry)-1]
+			if strings.HasPrefix(strings.ToLower(host), strings.ToLower(prefix)) {
+				return true
+			}
+		} else if strings.EqualFold(host, entry) {
+			return true
+		}
+	}
+	return false
 }
 
 // client returns a copy of the configured client with the redirect policy
@@ -536,13 +749,18 @@ func acceptableAssetPaths(tag string, assetName string) []string {
 
 // isLoopbackHost reports whether host addresses the local machine. Such
 // endpoints are only reachable by the local user and exist so tests can serve
-// a fake release.
+// a fake release. Local loopback also bypasses proxying.
 func isLoopbackHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
+	host = strings.TrimSpace(host)
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1", "[::1]":
 		return true
 	}
-	return false
+	if strings.HasPrefix(host, "127.") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ---------------------------------------------------------------------------

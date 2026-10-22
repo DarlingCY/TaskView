@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -251,7 +250,7 @@ func TestAutostartRegistrationEnablesNeedsEveryCondition(t *testing.T) {
 	if !full.Enables(`C:\app\taskview.exe`) {
 		t.Error("a matching registration must count as enabled")
 	}
-	if runtime.GOOS == "windows" && !full.Enables(`c:\app\taskview.exe`) {
+	if !full.Enables(`c:\app\taskview.exe`) {
 		t.Error("Windows paths are case-insensitive")
 	}
 	if full.Enables(`C:\other\taskview.exe`) {

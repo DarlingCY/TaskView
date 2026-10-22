@@ -526,7 +526,7 @@
       </div>
 
       <!-- search -->
-      <div class="group relative ml-auto min-w-0 flex-1 md:max-w-[340px] lg:ml-4">
+      <div class="group relative ml-auto min-w-0 flex-1 md:w-[240px] md:flex-none lg:ml-4">
         <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink3 transition-colors group-focus-within:text-brand" data-icon="search"></span>
         <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="搜索任务、笔记、文件…"
                class="field !py-[7px] !pl-8 !pr-9" aria-label="搜索任务" />
@@ -1540,35 +1540,6 @@
       '<span class="h-2 w-2 shrink-0 rounded-full" style="background:rgb(var(--c-' + tone + '))"></span>' + meta.label + '</span>';
   }
 
-  function codeAnchor(task) {
-    if (!task.file_path) return '';
-    const start = task.line_start ? Number(task.line_start) : null;
-    const end = task.line_end ? Number(task.line_end) : null;
-    let range = '';
-    if (start && end && end !== start) range = ':' + start + '-' + end;
-    else if (start) range = ':' + start;
-    const sp = splitPath(task.file_path);
-    return '<button data-act="code" title="' + attr(task.file_path + range) + ' — 点击查看代码上下文" ' +
-      'class="group/code flex w-full items-center gap-1.5 rounded-md border border-line-2 bg-surface3/50 px-2 py-1.5 text-left transition-all duration-150 hover:border-brand/40 hover:bg-brand/8">' +
-        '<span class="shrink-0 text-ink3 transition-colors group-hover/code:text-brand">' + icon('fileCode', 'h-3.5 w-3.5') + '</span>' +
-        '<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink2">' +
-          (sp.dir ? '<span class="text-ink3">' + esc(sp.dir) + '/</span>' : '') + '<span class="text-ink">' + esc(sp.name) + '</span>' +
-          (range ? '<span class="text-brand">' + esc(range) + '</span>' : '') +
-        '</span>' +
-        '<span class="shrink-0 text-ink3 opacity-0 transition-opacity group-hover/code:opacity-100">' + icon('external', 'h-3 w-3') + '</span>' +
-      '</button>';
-  }
-
-  function agentNotesBlock(task) {
-    if (!task.agent_notes) return '';
-    const text = String(task.agent_notes).trim();
-    return '<div class="relative rounded-lg border border-ai/25 bg-ai/8 px-2.5 py-2 pl-8">' +
-      '<span class="absolute left-2 top-2 text-ai/90">' + icon('sparkles', 'h-3.5 w-3.5') + '</span>' +
-      '<p class="mb-[3px] text-[9px] font-700 uppercase tracking-[.14em] text-ai/80">智能体洞察</p>' +
-      '<p class="whitespace-pre-line text-[11.5px] leading-relaxed text-ink2 clamp-3">' + esc(text) + '</p>' +
-    '</div>';
-  }
-
   function nextStatusOf(status) {
     const index = STATUS_ORDER.indexOf(status);
     if (index === -1) return 'todo';
@@ -1611,9 +1582,6 @@
         (task.description
           ? '<p class="card-sub mt-1.5 text-[12px] leading-relaxed text-ink2 clamp-2">' + esc(task.description) + '</p>'
           : '') +
-
-        (task.file_path ? '<div class="mt-2.5">' + codeAnchor(task) + '</div>' : '') +
-        (task.agent_notes ? '<div class="mt-2">' + agentNotesBlock(task) + '</div>' : '') +
 
         '<div class="mt-2.5 flex items-center gap-1.5">' +
           '<span class="card-sub ml-auto shrink-0 text-[10px] tabular-nums text-ink2">' + relativeTime(task.updated_at) + '</span>' +

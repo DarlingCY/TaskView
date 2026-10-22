@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1606,17 +1605,11 @@ func TestConcurrentCreatesFromMultipleStores(t *testing.T) {
 	}
 }
 
-func TestProjectPathClauseIsOSAppropriate(t *testing.T) {
-	// Windows volumes are case-insensitive and fold case; every other OS
-	// compares exactly, because a POSIX volume may be case-sensitive and two
-	// projects differing only in case must stay distinct.
+func TestProjectPathClauseFoldsCase(t *testing.T) {
+	// Windows volumes are case-insensitive, so the clause folds case.
 	got := projectPathClause("project_path")
-	if runtime.GOOS == "windows" {
-		if got != "LOWER(project_path) = LOWER(?)" {
-			t.Errorf("on windows clause = %q, want case-insensitive comparison", got)
-		}
-	} else if got != "project_path = ?" {
-		t.Errorf("on %s clause = %q, want case-sensitive comparison", runtime.GOOS, got)
+	if got != "LOWER(project_path) = LOWER(?)" {
+		t.Errorf("clause = %q, want case-insensitive comparison", got)
 	}
 
 	// The rule keys off the target column, not a hardcoded column name.
@@ -1625,7 +1618,7 @@ func TestProjectPathClauseIsOSAppropriate(t *testing.T) {
 	}
 }
 
-func TestProjectPathComparisonIsOSAppropriate(t *testing.T) {
+func TestProjectPathComparisonFoldsCase(t *testing.T) {
 	store := memStore(t)
 	dir := t.TempDir()
 	create(t, store, map[string]any{"title": "case", "project_path": dir})
@@ -1636,12 +1629,8 @@ func TestProjectPathComparisonIsOSAppropriate(t *testing.T) {
 		t.Fatalf("ListTasks: %v", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		if len(tasks) != 1 {
-			t.Errorf("on windows, case-different path should match: got %d tasks", len(tasks))
-		}
-	} else if len(tasks) != 0 {
-		t.Errorf("on %s, case-different path should not match: got %d tasks", runtime.GOOS, len(tasks))
+	if len(tasks) != 1 {
+		t.Errorf("case-different path should match: got %d tasks", len(tasks))
 	}
 
 	// GetStats must agree with ListTasks about the same path.
@@ -1649,12 +1638,8 @@ func TestProjectPathComparisonIsOSAppropriate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStats: %v", err)
 	}
-	wantTotal := int64(0)
-	if runtime.GOOS == "windows" {
-		wantTotal = 1
-	}
-	if stats.Total != wantTotal {
-		t.Errorf("on %s, GetStats total = %d, want %d", runtime.GOOS, stats.Total, wantTotal)
+	if stats.Total != 1 {
+		t.Errorf("GetStats total = %d, want 1", stats.Total)
 	}
 }
 
@@ -2324,10 +2309,8 @@ func TestProjectNameFromPath(t *testing.T) {
 	}
 
 	// A volume root has no directory component of its own.
-	if runtime.GOOS == "windows" {
-		if got := ProjectNameFromPath("C:\\"); got != "C:" {
-			t.Errorf("ProjectNameFromPath(\"C:\\\\\") = %q, want C:", got)
-		}
+	if got := ProjectNameFromPath("C:\\"); got != "C:" {
+		t.Errorf("ProjectNameFromPath(\"C:\\\\\") = %q, want C:", got)
 	}
 }
 

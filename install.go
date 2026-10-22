@@ -8,9 +8,7 @@
 //
 // Windows registers an optional login autostart through Task Scheduler (not the
 // Windows Service Control Manager), scoped to the current interactive user at
-// least privilege with no password and no elevation. Every other platform
-// supports install/uninstall but reports autostart as unsupported before
-// anything is written to disk.
+// least privilege with no password and no elevation.
 package main
 
 import (
@@ -18,22 +16,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
-
-// ErrAutostartUnsupported is returned by Install when Autostart is requested on
-// a platform without a supported autostart mechanism. It is raised before any
-// filesystem mutation, so a rejected request leaves the system untouched.
-var ErrAutostartUnsupported = errors.New("autostart is only supported on Windows; install without --autostart")
 
 // installLockTimeout bounds how long Install/Uninstall wait for the cross
 // process lock before giving up.
@@ -94,8 +85,7 @@ var runCommand = defaultRunCommand
 // runTaskScheduler performs the platform's autostart registration step. Tests
 // override it so no real scheduled task is ever created.
 //
-// The default delegates to the Task Scheduler COM call on Windows; other
-// platforms have none, because they reject --autostart before reaching it.
+// The default delegates to the Task Scheduler COM call on Windows.
 var runTaskScheduler = func(mode, taskName, xmlDoc string) error {
 	return platformRunTaskScheduler(mode, taskName, xmlDoc)
 }
@@ -108,8 +98,6 @@ var runTaskScheduler = func(mode, taskName, xmlDoc string) error {
 // with a Task root. It deliberately does NOT assert that every element name
 // exists in the TaskSettings schema - a wrong element is still reported by the
 // scheduler at registration, just sooner than it would be without this seam.
-//
-// The default is a no-op, which is correct for platforms without a scheduler.
 var validateTaskDefinition = func(xmlDoc string) error {
 	return platformValidateTaskDefinition(xmlDoc)
 }
@@ -156,8 +144,7 @@ func SelfDeleteScheduled() string {
 // ---------------------------------------------------------------------------
 
 // installTargetPath returns the canonical managed location for the installed
-// binary: <data-dir>/bin/taskview.exe on Windows, <data-dir>/bin/taskview
-// elsewhere.
+// binary: <data-dir>/bin/taskview.exe.
 func installTargetPath(dataDir string) (string, error) {
 	name, err := platformBinaryName()
 	if err != nil {
@@ -182,25 +169,17 @@ func runningManagedBinary(managed string) bool {
 	return samePath(self, managed)
 }
 
-// samePath compares two paths after making them absolute and clean. On Windows
-// the comparison is case-insensitive; elsewhere it is exact.
 // samePath compares two paths after making them absolute and clean.
 //
-// Only Windows folds case, because only Windows guarantees a case-insensitive
-// filesystem. Folding elsewhere would report two genuinely distinct POSIX
-// paths as the same file, which is the same class of bug this comparison exists
-// to avoid.
+// The comparison folds case, because Windows guarantees a case-insensitive
+// filesystem: two paths that differ only in case name the same file there.
 func samePath(a, b string) bool {
 	absA, errA := filepath.Abs(a)
 	absB, errB := filepath.Abs(b)
 	if errA != nil || errB != nil {
 		return false
 	}
-	cleanA, cleanB := filepath.Clean(absA), filepath.Clean(absB)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(cleanA, cleanB)
-	}
-	return cleanA == cleanB
+	return strings.EqualFold(filepath.Clean(absA), filepath.Clean(absB))
 }
 
 // ---------------------------------------------------------------------------
@@ -219,11 +198,6 @@ func samePath(a, b string) bool {
 // false in that case, and the manifest never records an unconfirmed
 // registration.
 func Install(opts InstallOptions) (*InstallResult, error) {
-	// Reject an unsupported request before creating directories or files.
-	if opts.Autostart && !platformAutostartSupported() {
-		return nil, ErrAutostartUnsupported
-	}
-
 	dataDir, err := DataDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve data directory: %w", err)
@@ -283,7 +257,7 @@ func Install(opts InstallOptions) (*InstallResult, error) {
 
 	result := &InstallResult{Path: managed}
 
-	if wantAutostart && platformAutostartSupported() {
+	if wantAutostart {
 		if err := platformRegisterAutostart(managed, dataDir); err != nil {
 			// The executable is installed and runnable. Record the honest
 			// state (not registered) and hand back an actionable error.
@@ -553,7 +527,7 @@ func writeInstallManifest(dataDir string, manifest *installManifest) error {
 // ---------------------------------------------------------------------------
 // Deferred self-removal
 //
-// Only Windows needs this: Windows refuses to delete a running image, while on
-// POSIX unlinking a running binary simply succeeds. The helper and its script
-// therefore live in install_windows.go.
+// Windows refuses to delete a running image, so the removal has to be deferred
+// to a helper that runs after this process exits. The helper and its script
+// live in install_windows.go.
 // ---------------------------------------------------------------------------

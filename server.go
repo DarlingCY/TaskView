@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -187,15 +186,7 @@ func parseBoolParam(value string) (bool, bool) {
 
 // OpenBrowser launches url in the default system browser without shell invocation.
 func OpenBrowser(targetURL string) bool {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL)
-	case "darwin":
-		cmd = exec.Command("open", targetURL)
-	default:
-		cmd = exec.Command("xdg-open", targetURL)
-	}
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL)
 	if err := cmd.Start(); err != nil {
 		return false
 	}

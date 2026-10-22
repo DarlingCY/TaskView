@@ -956,3 +956,193 @@ func TestDownloadAcceptsVersionWithoutTagPrefix(t *testing.T) {
 		t.Fatalf("expected the file %q, got %q", testInstallerName, filepath.Base(path))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Proxy tests
+// ---------------------------------------------------------------------------
+
+func TestResolveUpdateProxy_EnvironmentPriority(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://env-proxy:8080")
+	t.Setenv("HTTP_PROXY", "http://env-proxy:8080")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+
+	origReader := readWindowsProxyRegistry
+	defer func() { readWindowsProxyRegistry = origReader }()
+	readWindowsProxyRegistry = func() (bool, string, string, error) {
+		return true, "127.0.0.1:7890", "", nil
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/DarlingCY/TaskView/releases/latest", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	proxyURL, err := resolveUpdateProxy(req)
+	if err != nil {
+		t.Fatalf("resolveUpdateProxy: %v", err)
+	}
+	if proxyURL == nil {
+		t.Fatal("expected proxy URL from environment, got nil")
+	}
+	if proxyURL.String() != "http://env-proxy:8080" {
+		t.Fatalf("expected http://env-proxy:8080, got %s", proxyURL.String())
+	}
+}
+
+func TestResolveUpdateProxy_WindowsRegistryFallback(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("http_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	origReader := readWindowsProxyRegistry
+	defer func() { readWindowsProxyRegistry = origReader }()
+	readWindowsProxyRegistry = func() (bool, string, string, error) {
+		return true, "127.0.0.1:7890", "", nil
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/DarlingCY/TaskView/releases/latest", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	proxyURL, err := resolveUpdateProxy(req)
+	if err != nil {
+		t.Fatalf("resolveUpdateProxy: %v", err)
+	}
+	if proxyURL == nil {
+		t.Fatal("expected fallback to Windows registry proxy, got nil")
+	}
+	if proxyURL.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("expected http://127.0.0.1:7890, got %s", proxyURL.String())
+	}
+}
+
+func TestResolveUpdateProxy_WindowsDisabled(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
+
+	origReader := readWindowsProxyRegistry
+	defer func() { readWindowsProxyRegistry = origReader }()
+	readWindowsProxyRegistry = func() (bool, string, string, error) {
+		return false, "127.0.0.1:7890", "", nil
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/DarlingCY/TaskView/releases/latest", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	proxyURL, err := resolveUpdateProxy(req)
+	if err != nil {
+		t.Fatalf("resolveUpdateProxy: %v", err)
+	}
+	if proxyURL != nil {
+		t.Fatalf("expected no proxy when disabled, got %s", proxyURL.String())
+	}
+}
+
+func TestResolveUpdateProxy_LoopbackAlwaysBypassed(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://env-proxy:8080")
+	t.Setenv("HTTP_PROXY", "http://env-proxy:8080")
+
+	origReader := readWindowsProxyRegistry
+	defer func() { readWindowsProxyRegistry = origReader }()
+	readWindowsProxyRegistry = func() (bool, string, string, error) {
+		return true, "127.0.0.1:7890", "", nil
+	}
+
+	loopbackURLs := []string{
+		"http://127.0.0.1:3333/api/agent/health",
+		"http://127.0.0.2:8080/foo",
+		"http://localhost:3333/",
+		"http://[::1]:3333/",
+	}
+
+	for _, raw := range loopbackURLs {
+		req, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%q): %v", raw, err)
+		}
+		proxyURL, err := resolveUpdateProxy(req)
+		if err != nil {
+			t.Fatalf("resolveUpdateProxy(%q): %v", raw, err)
+		}
+		if proxyURL != nil {
+			t.Fatalf("expected loopback %q to bypass proxy, got %s", raw, proxyURL.String())
+		}
+	}
+}
+
+func TestParseWindowsProxy_Formats(t *testing.T) {
+	targetHTTPS, _ := url.Parse("https://api.github.com/foo")
+	targetHTTP, _ := url.Parse("http://api.github.com/foo")
+
+	// 1. Simple address without scheme.
+	p, err := parseWindowsProxy("127.0.0.1:7890", "", targetHTTPS)
+	if err != nil || p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("simple proxy: got %v, err %v", p, err)
+	}
+
+	// 2. Simple address with scheme.
+	p, err = parseWindowsProxy("http://proxy.corp:8080", "", targetHTTPS)
+	if err != nil || p == nil || p.String() != "http://proxy.corp:8080" {
+		t.Fatalf("simple proxy with scheme: got %v, err %v", p, err)
+	}
+
+	// 3. Multi-protocol format.
+	multi := "http=127.0.0.1:8080;https=127.0.0.1:8443;socks=127.0.0.1:1080"
+	pHTTPS, err := parseWindowsProxy(multi, "", targetHTTPS)
+	if err != nil || pHTTPS == nil || pHTTPS.String() != "http://127.0.0.1:8443" {
+		t.Fatalf("multi https: got %v, err %v", pHTTPS, err)
+	}
+	pHTTP, err := parseWindowsProxy(multi, "", targetHTTP)
+	if err != nil || pHTTP == nil || pHTTP.String() != "http://127.0.0.1:8080" {
+		t.Fatalf("multi http: got %v, err %v", pHTTP, err)
+	}
+
+	// 4. Multi-protocol socks fallback.
+	socksOnly := "http=127.0.0.1:8080;socks=127.0.0.1:1080"
+	pSocks, err := parseWindowsProxy(socksOnly, "", targetHTTPS)
+	if err != nil || pSocks == nil || pSocks.String() != "socks5://127.0.0.1:1080" {
+		t.Fatalf("socks fallback: got %v, err %v", pSocks, err)
+	}
+}
+
+func TestParseWindowsProxy_Overrides(t *testing.T) {
+	server := "127.0.0.1:7890"
+
+	// 1. <local> overrides intranet host without dots.
+	localURL, _ := url.Parse("https://intranet/api")
+	p, err := parseWindowsProxy(server, "<local>", localURL)
+	if err != nil || p != nil {
+		t.Fatalf("<local> override: expected nil, got %v", p)
+	}
+
+	// But dotted host is not overridden by <local>.
+	externalURL, _ := url.Parse("https://api.github.com/foo")
+	p, err = parseWindowsProxy(server, "<local>", externalURL)
+	if err != nil || p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("external with <local>: expected proxy, got %v, err %v", p, err)
+	}
+
+	// 2. Wildcard override: *.github.com;*.internal
+	overrides := "*.github.com;*.internal"
+	p, err = parseWindowsProxy(server, overrides, externalURL)
+	if err != nil || p != nil {
+		t.Fatalf("wildcard override: expected nil, got %v", p)
+	}
+
+	gitlabURL, _ := url.Parse("https://gitlab.com/foo")
+	p, err = parseWindowsProxy(server, overrides, gitlabURL)
+	if err != nil || p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("non-matching override: expected proxy, got %v", p)
+	}
+}
