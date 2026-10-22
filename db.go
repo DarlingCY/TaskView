@@ -1393,49 +1393,28 @@ func (s *Store) RejectTask(id, reason string) (*Task, error) {
 		return nil, newValidationError("rejection reason is required")
 	}
 
-	existing, err := s.GetTask(id)
-	if err != nil {
-		return nil, err
-	}
-	if existing == nil {
-		return nil, nil
-	}
-
-	var targetStatus string
-	switch existing.Status {
-	case "review":
-		targetStatus = "in_progress"
-	case "in_progress":
-		targetStatus = "backlog"
-	case "todo":
-		targetStatus = "backlog"
-	case "backlog":
-		return nil, newValidationError("task %s is already in backlog and cannot be rejected", id)
-	case "done":
-		return nil, newValidationError("task %s is done and cannot be rejected", id)
-	default:
-		return nil, newValidationError("cannot reject task %s with status %s", id, existing.Status)
-	}
-
-	ts := time.Now().UnixMilli()
-	res, err := db.Exec(`
+	// Check the status and roll it back in the same statement so concurrent
+	// writers cannot apply a rejection based on a stale status.
+	row := db.QueryRow(`
 		UPDATE tasks
-		SET status = ?,
+		SET status = CASE status WHEN 'review' THEN 'in_progress' ELSE 'backlog' END,
 		    rejection_reason = ?,
 		    updated_at = ?
-		WHERE id = ?`, targetStatus, trimmedReason, ts, id)
-	if err != nil {
-		return nil, fmt.Errorf("reject task %q: %w", id, err)
+		WHERE id = ? AND status IN ('review', 'in_progress', 'todo')
+		RETURNING `+taskColumns, trimmedReason, time.Now().UnixMilli(), id)
+	rejected, err := scanTask(row)
+	if err == nil {
+		return rejected, nil
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("reject task %q: %w", id, err)
-	}
-	if affected == 0 {
-		return nil, nil
 	}
 
-	return s.GetTask(id)
+	existing, err := s.GetTask(id)
+	if err != nil || existing == nil {
+		return nil, err
+	}
+	return nil, newValidationError("cannot reject task %s with status %s", id, existing.Status)
 }
 
 // Ping verifies that the database is open and that its schema can be read.

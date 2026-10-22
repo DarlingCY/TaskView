@@ -97,6 +97,7 @@ func TestUpdateFlowGivesEveryPhaseItsOwnBudget(t *testing.T) {
 	if err := flow.run(context.Background()); err != nil {
 		t.Fatalf("the update failed: %v", err)
 	}
+	after := time.Now()
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -110,14 +111,18 @@ func TestUpdateFlowGivesEveryPhaseItsOwnBudget(t *testing.T) {
 		t.Fatal("the download must run under a deadline of its own")
 	}
 
-	// The metadata check is bounded by the short metadata timeout.
-	if remaining := rec.checkDeadline.Sub(before); remaining > updateMetadataTimeout {
-		t.Errorf("the metadata check may run for %s, want at most %s", remaining, updateMetadataTimeout)
-	}
-	// The download gets the full download budget, no matter how much of the
-	// metadata budget was used.
-	if remaining := rec.downloadDeadline.Sub(before); remaining > updateDownloadTimeout {
-		t.Errorf("the download may run for %s, want at most %s", remaining, updateDownloadTimeout)
+	// Each deadline is created between before and after, with its own budget.
+	for _, phase := range []struct {
+		name     string
+		deadline time.Time
+		budget   time.Duration
+	}{
+		{"metadata check", rec.checkDeadline, updateMetadataTimeout},
+		{"download", rec.downloadDeadline, updateDownloadTimeout},
+	} {
+		if phase.deadline.Before(before.Add(phase.budget)) || phase.deadline.After(after.Add(phase.budget)) {
+			t.Errorf("the %s deadline %s is outside its phase budget", phase.name, phase.deadline)
+		}
 	}
 	if !rec.downloadDeadline.After(rec.checkDeadline) {
 		t.Errorf("the download deadline %s is not after the metadata deadline %s", rec.downloadDeadline, rec.checkDeadline)

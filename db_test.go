@@ -703,6 +703,47 @@ func TestRejectTaskStateTransitions(t *testing.T) {
 	}
 }
 
+func TestRejectTaskIsAtomicUnderConcurrency(t *testing.T) {
+	store := memStore(t)
+	task := create(t, store, map[string]any{"title": "Concurrent rejection", "status": "todo"})
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			<-start
+			rejected, err := store.RejectTask(task.ID, "Needs clarification")
+			if err == nil && (rejected == nil || rejected.Status != "backlog") {
+				err = fmt.Errorf("unexpected rejected task: %+v", rejected)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+
+	succeeded := 0
+	for worker := 0; worker < workers; worker++ {
+		err := <-errs
+		if err == nil {
+			succeeded++
+		} else if !IsValidationError(err) {
+			t.Errorf("RejectTask: %v", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Errorf("successful rejections = %d, want exactly 1", succeeded)
+	}
+	final, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final == nil || final.Status != "backlog" || final.ClosedAt != nil ||
+		final.RejectionReason == nil || *final.RejectionReason != "Needs clarification" {
+		t.Errorf("final task = %+v, want open backlog task with rejection reason", final)
+	}
+}
+
 func TestUpdateTaskClearsRejectionReasonOnReviewAndDone(t *testing.T) {
 	store := memStore(t)
 
