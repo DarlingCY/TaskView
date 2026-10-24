@@ -1,7 +1,7 @@
 // Unit tests for the TaskView store. They never touch the real user database:
 // every test opens a database under t.TempDir() (or uses :memory:).
 
-package main
+package db
 
 import (
 	"database/sql"
@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -126,7 +127,7 @@ func TestOpenStoreRetainsSchemaAndIndexes(t *testing.T) {
 	}
 	indexes.Close()
 
-	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_status", "idx_tasks_created_at"} {
+	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_status", "idx_tasks_created_at", "idx_tasks_updated_created_id"} {
 		if !found[want] {
 			t.Errorf("missing index %s (found: %v)", want, found)
 		}
@@ -1505,13 +1506,13 @@ func TestCanonicalizeAliasPrecedence(t *testing.T) {
 	// Go randomises map iteration, so repeat: a single-pass merge would flip
 	// the winner between runs.
 	for i := 0; i < 500; i++ {
-		if got := canonicalize(input); !reflect.DeepEqual(got, want) {
+		if got := Canonicalize(input); !reflect.DeepEqual(got, want) {
 			t.Fatalf("iteration %d: canonicalize = %#v, want %#v", i, got, want)
 		}
 	}
 
 	// camelCase still applies when snake_case is absent.
-	camelOnly := canonicalize(map[string]any{"filePath": "camel.go", "lineStart": float64(3)})
+	camelOnly := Canonicalize(map[string]any{"filePath": "camel.go", "lineStart": float64(3)})
 	if camelOnly["file_path"] != "camel.go" || camelOnly["line_start"] != float64(3) {
 		t.Errorf("camel-only = %#v", camelOnly)
 	}
@@ -1943,10 +1944,15 @@ func TestConcurrentCreatesFromMultipleStores(t *testing.T) {
 }
 
 func TestProjectPathClauseFoldsCase(t *testing.T) {
-	// Windows volumes are case-insensitive, so the clause folds case.
 	got := projectPathClause("project_path")
-	if got != "LOWER(project_path) = LOWER(?)" {
-		t.Errorf("clause = %q, want case-insensitive comparison", got)
+	if runtime.GOOS == "windows" {
+		if got != "LOWER(project_path) = LOWER(?)" {
+			t.Errorf("clause = %q, want case-insensitive comparison on Windows", got)
+		}
+	} else {
+		if got != "project_path = ?" {
+			t.Errorf("clause = %q, want exact comparison on Unix", got)
+		}
 	}
 
 	// The rule keys off the target column, not a hardcoded column name.
@@ -1966,8 +1972,12 @@ func TestProjectPathComparisonFoldsCase(t *testing.T) {
 		t.Fatalf("ListTasks: %v", err)
 	}
 
-	if len(tasks) != 1 {
-		t.Errorf("case-different path should match: got %d tasks", len(tasks))
+	expected := 0
+	if runtime.GOOS == "windows" {
+		expected = 1
+	}
+	if len(tasks) != expected {
+		t.Errorf("for GOOS=%s: got %d tasks, want %d", runtime.GOOS, len(tasks), expected)
 	}
 
 	// GetStats must agree with ListTasks about the same path.
@@ -1975,8 +1985,8 @@ func TestProjectPathComparisonFoldsCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStats: %v", err)
 	}
-	if stats.Total != 1 {
-		t.Errorf("GetStats total = %d, want 1", stats.Total)
+	if stats.Total != int64(expected) {
+		t.Errorf("for GOOS=%s: GetStats total = %d, want %d", runtime.GOOS, stats.Total, expected)
 	}
 }
 
@@ -1999,15 +2009,18 @@ const legacyWindowsProjectPath = `C:\dev\TaskView`
 func legacyFixturePath(t *testing.T) string {
 	t.Helper()
 
-	const path = "testdata/legacy_node.db"
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("legacy fixture %s is required but unreadable: %v", path, err)
+	candidates := []string{
+		"testdata/legacy_node.db",
+		filepath.Join("..", "..", "testdata", "legacy_node.db"),
 	}
-	if info.IsDir() || info.Size() == 0 {
-		t.Fatalf("legacy fixture %s is empty or not a file (size %d)", path, info.Size())
+	for _, p := range candidates {
+		info, err := os.Stat(p)
+		if err == nil && !info.IsDir() && info.Size() > 0 {
+			return p
+		}
 	}
-	return path
+	t.Fatalf("legacy fixture testdata/legacy_node.db is required but unreadable")
+	return ""
 }
 
 // copyFileToTemp keeps the supplied fixture pristine: WAL mode and any future
@@ -2495,7 +2508,7 @@ func TestMigrationDropsTagsColumnAndPreservesEveryOtherField(t *testing.T) {
 	// Every index the schema defines must exist on the rebuilt table.
 	indexes := taskIndexNames(t, store.db)
 	for _, want := range []string{"idx_tasks_project_path", "idx_tasks_lower_proj_status", "idx_tasks_status",
-		"idx_tasks_created_at", "idx_tasks_updated_at", "idx_tasks_priority"} {
+		"idx_tasks_created_at", "idx_tasks_updated_at", "idx_tasks_priority", "idx_tasks_updated_created_id"} {
 		if !indexes[want] {
 			t.Errorf("missing index %s after the migration (found: %v)", want, indexes)
 		}
@@ -2637,7 +2650,10 @@ func TestNormalizeProjectPathRequiresAnAbsolutePath(t *testing.T) {
 }
 
 func TestProjectNameFromPath(t *testing.T) {
-	nested := filepath.Join(string(filepath.Separator), "dev", "my-app")
+	// Use a real path of this host instead of a hard-coded Windows volume:
+	// the name rule follows the host filesystem.
+	nativeDir := t.TempDir()
+	nested := filepath.Join(nativeDir, "my-app")
 	if got := ProjectNameFromPath(nested); got != "my-app" {
 		t.Errorf("ProjectNameFromPath(%q) = %q, want my-app", nested, got)
 	}
@@ -2648,9 +2664,22 @@ func TestProjectNameFromPath(t *testing.T) {
 		t.Errorf("ProjectNameFromPath(\"\") = %q, want an empty name", got)
 	}
 
-	// A volume root has no directory component of its own.
-	if got := ProjectNameFromPath("C:\\"); got != "C:" {
-		t.Errorf("ProjectNameFromPath(\"C:\\\\\") = %q, want C:", got)
+	// A volume root has no directory component of its own. The rule belongs
+	// to the host filesystem: Windows names the volume, Unix names the root
+	// directory of the machine.
+	if runtime.GOOS == "windows" {
+		if got := ProjectNameFromPath("C:\\"); got != "C:" {
+			t.Errorf("ProjectNameFromPath(\"C:\\\\\") = %q, want C:", got)
+		}
+		return
+	}
+	root := string(filepath.Separator)
+	if got := ProjectNameFromPath(root); got != root {
+		t.Errorf("ProjectNameFromPath(%q) = %q, want %q", root, got, root)
+	}
+	// A real path of this machine names its last directory.
+	if got := ProjectNameFromPath(nativeDir); got != filepath.Base(nativeDir) {
+		t.Errorf("ProjectNameFromPath(%q) = %q, want %q", nativeDir, got, filepath.Base(nativeDir))
 	}
 }
 
@@ -2717,6 +2746,62 @@ func TestQueryPlanUsesCompositeExpressionIndex(t *testing.T) {
 
 	// 2. Scoped by project_path and status
 	checkPlan("SELECT "+taskColumns+" FROM tasks WHERE LOWER(project_path) = LOWER(?) AND status = ?", proj, "todo")
+}
+
+// The default listing (Sort "updated") sorts by updated_at DESC, created_at DESC,
+// id ASC. idx_tasks_updated_created_id repeats that column order and direction
+// exactly, so the query is answered by walking the index instead of scanning
+// the table and sorting into a temporary B-tree.
+func TestQueryPlanUsesDefaultSortIndex(t *testing.T) {
+	store := memStore(t)
+	proj := filepath.Join(t.TempDir(), "app")
+
+	for i := 0; i < 20; i++ {
+		create(t, store, map[string]any{
+			"title":        fmt.Sprintf("Task %d", i),
+			"project_path": proj,
+		})
+	}
+
+	checkPlan := func(label, query string, args ...any) {
+		t.Helper()
+		rows, err := store.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatalf("%s: EXPLAIN QUERY PLAN: %v", label, err)
+		}
+		defer rows.Close()
+
+		var details []string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatalf("%s: scan plan row: %v", label, err)
+			}
+			details = append(details, detail)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: iterate plan: %v", label, err)
+		}
+
+		joined := strings.Join(details, "\n")
+		t.Logf("%s plan:\n%s", label, joined)
+		if !strings.Contains(joined, "idx_tasks_updated_created_id") {
+			t.Errorf("%s: query plan did not use idx_tasks_updated_created_id:\n%s", label, joined)
+		}
+		if strings.Contains(joined, "TEMP B-TREE") {
+			t.Errorf("%s: query plan still sorts into a temporary B-tree:\n%s", label, joined)
+		}
+	}
+
+	order := " ORDER BY updated_at DESC, created_at DESC, id ASC"
+	checkPlan("all projects, first page", `SELECT `+taskColumns+` FROM tasks`+order+` LIMIT ?`, 100)
+	checkPlan("all projects, later page", `SELECT `+taskColumns+` FROM tasks`+order+` LIMIT ? OFFSET ?`, 100, 500)
+
+	// The board's most common request is the unscoped listing (all=true). A
+	// project-scoped listing is still served by idx_tasks_project_path and
+	// sorts its (small) result set - deliberately not indexed, because a
+	// project|updated composite index would only add write amplification.
 }
 
 // ---------------------------------------------------------------- helpers --

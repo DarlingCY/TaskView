@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -387,5 +388,433 @@ func TestPrepareApplicationInstallRefusesBeforeItStartsAnything(t *testing.T) {
 	err = prepareApplicationInstall(env.target, env.txFile, true)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("prepare with a stale transaction: got %v, want a refusal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The console CLI belongs to the installation transaction
+// ---------------------------------------------------------------------------
+
+// A failed upgrade has to restore the console CLI together with the program.
+// Otherwise the old program and the new CLI stay next to each other.
+//
+// This is the failure injection of the independent verification: the
+// installer replaces both files, the new program never becomes healthy and
+// the worker has to put the previous CLI back.
+func TestApplicationInstallWorkerFailureRestoresThePreviousCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "previous CLI")
+
+	f := &installFakes{
+		registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"},
+		healthErr:    errors.New("simulated new application health failure"),
+	}
+	// The installer replaces the program and the CLI while the worker waits.
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	err := applicationInstallWorker(env.txFile)
+	if err == nil {
+		t.Fatal("the worker reported success although the application never became healthy")
+	}
+	if !strings.Contains(err.Error(), "upgrade failed") {
+		t.Fatalf("worker error = %v, want an upgrade failure", err)
+	}
+	if got := readFileString(t, env.target); got != "previous executable" {
+		t.Fatalf("TaskView.exe = %q, want the previous version to be restored", got)
+	}
+	if got := readFileString(t, cli); got != "previous CLI" {
+		t.Fatalf("CLI rollback missing: got %q, want previous CLI", got)
+	}
+}
+
+// An installation that adds the console CLI for the first time has to remove
+// it again when it fails. A new CLI next to an old program is exactly the
+// mixed state the transaction exists to prevent.
+func TestApplicationInstallWorkerFailureRemovesAnAddedCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	if _, err := os.Stat(cli); !os.IsNotExist(err) {
+		t.Fatalf("the previous installation already has a CLI: %v", err)
+	}
+
+	f := &installFakes{
+		registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"},
+		healthErr:    errors.New("simulated new application health failure"),
+	}
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	if err := applicationInstallWorker(env.txFile); err == nil {
+		t.Fatal("the worker reported success although the application never became healthy")
+	}
+	if got := readFileString(t, env.target); got != "previous executable" {
+		t.Fatalf("TaskView.exe = %q, want the previous version to be restored", got)
+	}
+	if _, err := os.Stat(cli); !os.IsNotExist(err) {
+		t.Fatalf("the CLI of the failed installation is still there: %v", err)
+	}
+}
+
+// A successful installation keeps the new CLI.
+func TestApplicationInstallWorkerCommitKeepsTheNewCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "previous CLI")
+
+	f := &installFakes{registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"}}
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	// The installer replaces the files before the decision arrives, so the
+	// application is started and reports the expected version.
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	if err := applicationInstallWorker(env.txFile); err != nil {
+		t.Fatalf("commit worker: %v", err)
+	}
+	if got := readFileString(t, cli); got != "new CLI" {
+		t.Fatalf("the CLI = %q, want the new one to stay in place", got)
+	}
+	tx, err := readInstallTransaction(env.txFile)
+	if err != nil {
+		t.Fatalf("read transaction: %v", err)
+	}
+	if tx.Phase != "complete" {
+		t.Fatalf("transaction phase = %q, want complete", tx.Phase)
+	}
+	if cliState(tx.CLIState) != cliStatePresent {
+		t.Fatalf("the recorded CLI state = %q, want %q", tx.CLIState, cliStatePresent)
+	}
+}
+
+// A first installation that fails leaves neither the program nor the CLI
+// behind.
+func TestApplicationInstallWorkerFirstInstallFailureLeavesNothing(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+
+	f := &installFakes{
+		registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"},
+		healthErr:    errors.New("simulated new application health failure"),
+	}
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	if err := applicationInstallWorker(env.txFile); err == nil {
+		t.Fatal("the worker reported success although the application never became healthy")
+	}
+	if _, err := os.Stat(env.target); !os.IsNotExist(err) {
+		t.Fatalf("the program of the failed installation is still there: %v", err)
+	}
+	if _, err := os.Stat(cli); !os.IsNotExist(err) {
+		t.Fatalf("the CLI of the failed installation is still there: %v", err)
+	}
+}
+
+// A successful first installation keeps the newly installed CLI and records
+// that the previous installation had none.
+func TestApplicationInstallWorkerFirstInstallCommitKeepsTheNewCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+
+	f := &installFakes{registration: autostartRegistration{}}
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	if err := applicationInstallWorker(env.txFile); err != nil {
+		t.Fatalf("first install worker: %v", err)
+	}
+	if got := readFileString(t, env.target); got != "new executable" {
+		t.Fatalf("TaskView.exe = %q, want the new executable", got)
+	}
+	if got := readFileString(t, cli); got != "new CLI" {
+		t.Fatalf("CLI = %q, want the new CLI", got)
+	}
+	tx, err := readInstallTransaction(env.txFile)
+	if err != nil {
+		t.Fatalf("read transaction: %v", err)
+	}
+	if tx.Phase != "complete" || cliState(tx.CLIState) != cliStateAbsent {
+		t.Fatalf("transaction = %+v, want complete with an absent previous CLI", tx)
+	}
+}
+
+// An aborted installation restores the previous CLI as well.
+func TestApplicationInstallWorkerAbortRestoresThePreviousCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "previous CLI")
+
+	f := &installFakes{registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"}}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "abort"})
+
+	if err := applicationInstallWorker(env.txFile); err != nil {
+		t.Fatalf("abort worker: %v", err)
+	}
+	if got := readFileString(t, cli); got != "previous CLI" {
+		t.Fatalf("the CLI = %q, want the previous one to be left in place", got)
+	}
+}
+
+// A transaction of an older release does not know about the CLI. Its state
+// stays unknown, so the CLI is never touched.
+func TestRollbackLeavesAnUnknownCLIAlone(t *testing.T) {
+	env := newInstallTestEnv(t)
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "some CLI")
+
+	tx := &installTransaction{Target: env.target, DataDir: env.dataDir, Directory: env.txDir}
+	if cliState(tx.CLIState) != cliStateUnknown {
+		t.Fatalf("the CLI state = %q, want it to be unknown", tx.CLIState)
+	}
+	if err := restoreInstalledFiles(tx); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := readFileString(t, cli); got != "some CLI" {
+		t.Fatalf("the CLI = %q, want it to be left alone", got)
+	}
+}
+
+// A CLI that cannot be replaced stops the installation before a single file
+// is written. The error is reported, not swallowed.
+func TestProbeExecutableReplaceableRefusesAFileItCannotOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "taskview-cli.exe")
+	writeExecutable(t, path, "cli")
+	if err := probeExecutableReplaceable(path); err != nil {
+		t.Fatalf("a replaceable file was refused: %v", err)
+	}
+	// A missing file is replaceable: it is going to be created.
+	if err := probeExecutableReplaceable(filepath.Join(dir, "missing.exe")); err != nil {
+		t.Fatalf("a missing file was refused: %v", err)
+	}
+	// A directory is not a file that can be replaced.
+	if err := probeExecutableReplaceable(dir); err == nil {
+		t.Fatal("a directory was accepted as a replaceable file")
+	}
+}
+
+// Recovery is idempotent: running it again over an already restored
+// installation is a no-op, and the two files stay in the previous state. A
+// repeated abort or a retried worker must not damage a restored installation.
+func TestRollbackIsIdempotentForProgramAndCLI(t *testing.T) {
+	env := newInstallTestEnv(t)
+	previousManifest := env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+
+	backupDir := filepath.Join(env.root, "backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("create backup directory: %v", err)
+	}
+	writeExecutable(t, filepath.Join(backupDir, "TaskView.exe.bak"), "previous executable")
+	writeExecutable(t, filepath.Join(backupDir, cliBackupFileName), "previous CLI")
+	if err := os.WriteFile(filepath.Join(backupDir, "install.json.bak"), previousManifest, 0o600); err != nil {
+		t.Fatalf("write manifest backup: %v", err)
+	}
+	writeExecutable(t, env.target, "new executable")
+	writeExecutable(t, cli, "new CLI")
+
+	tx := &installTransaction{
+		Target:         env.target,
+		DataDir:        env.dataDir,
+		Directory:      backupDir,
+		HadApplication: true,
+		HadManifest:    true,
+		CLIState:       string(cliStatePresent),
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := rollbackApplication(tx); err != nil {
+			t.Fatalf("rollback attempt %d: %v", attempt, err)
+		}
+		if got := readFileString(t, env.target); got != "previous executable" {
+			t.Fatalf("attempt %d: TaskView.exe = %q, want the previous executable", attempt, got)
+		}
+		if got := readFileString(t, cli); got != "previous CLI" {
+			t.Fatalf("attempt %d: CLI = %q, want the previous CLI", attempt, got)
+		}
+	}
+}
+
+// A restoration that cannot copy one file reports the failure instead of
+// committing a half restored installation. The other file is still attempted,
+// so one error never hides the second restoration.
+func TestRestoreInstalledFilesReportsAFailedCLIRestore(t *testing.T) {
+	env := newInstallTestEnv(t)
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+
+	backupDir := filepath.Join(env.root, "backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("create backup directory: %v", err)
+	}
+	writeExecutable(t, filepath.Join(backupDir, "TaskView.exe.bak"), "previous executable")
+	// The CLI backup is missing on purpose.
+	writeExecutable(t, env.target, "new executable")
+	writeExecutable(t, cli, "new CLI")
+
+	tx := &installTransaction{
+		Target:         env.target,
+		DataDir:        env.dataDir,
+		Directory:      backupDir,
+		HadApplication: true,
+		CLIState:       string(cliStatePresent),
+	}
+	err := restoreInstalledFiles(tx)
+	if err == nil {
+		t.Fatal("a missing CLI backup was reported as a successful restore")
+	}
+	if !strings.Contains(err.Error(), cliBackupFileName) {
+		t.Fatalf("error = %v, want it to name the missing CLI backup", err)
+	}
+	// The program was still restored: the two restorations are independent.
+	if got := readFileString(t, env.target); got != "previous executable" {
+		t.Fatalf("TaskView.exe = %q, want the previous executable despite the CLI error", got)
+	}
+	if got := readFileString(t, cli); got != "new CLI" {
+		t.Fatalf("CLI = %q, want the failed restore to leave the file alone", got)
+	}
+}
+
+// The installer ships both executables. This is a static contract test: it
+// proves that the Inno script still installs the console CLI next to the
+// program, so the transaction above cannot be bypassed by a script that only
+// copies the desktop binary. It does not replace running the real installer.
+func TestInstallerScriptInstallsTheConsoleCLI(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("installer", "taskview.iss"))
+	if err != nil {
+		t.Fatalf("read installer script: %v", err)
+	}
+	script := string(raw)
+	for _, want := range []string{
+		`#define MyCliSource "..\dist\taskview-cli.exe"`,
+		`Source: {#MyCliSource}; DestDir: "{app}"; Flags: ignoreversion`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("installer script does not contain %q", want)
+		}
+	}
+}
+
+// A transaction written by an older release has no cli_state field at all.
+// It still has to be readable, and its absent CLI state means the CLI is
+// never touched by a recovery: the worker was cancelled before it inspected
+// the CLI, so the file on disk is not the one this transaction wrote.
+func TestReadInstallTransactionAcceptsALegacyDocumentWithoutCLIState(t *testing.T) {
+	env := newInstallTestEnv(t)
+	legacy := `{"target":` + strconv.Quote(env.target) + `,` +
+		`"data_dir":` + strconv.Quote(env.dataDir) + `,` +
+		`"version":"1.1.0","directory":` + strconv.Quote(env.txDir) + `,` +
+		`"phase":"starting","allow_legacy":false,"had_application":false}`
+	if err := os.WriteFile(env.txFile, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy transaction: %v", err)
+	}
+
+	tx, err := readInstallTransaction(env.txFile)
+	if err != nil {
+		t.Fatalf("read legacy transaction: %v", err)
+	}
+	if cliState(tx.CLIState) != cliStateUnknown {
+		t.Fatalf("legacy CLI state = %q, want unknown", tx.CLIState)
+	}
+
+	// A recovery of that legacy transaction leaves the CLI of the current
+	// installation alone instead of deleting or replacing it.
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "installed CLI")
+	if err := restoreInstalledFiles(tx); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := readFileString(t, cli); got != "installed CLI" {
+		t.Fatalf("CLI = %q, want it to be left alone", got)
+	}
+}
+
+// A failed upgrade whose previous CLI cannot be put back reports both facts:
+// the upgrade failed and the recovery failed. It never reports success.
+func TestApplicationInstallWorkerReportsAFailedCLIRecovery(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "previous CLI")
+
+	f := &installFakes{
+		registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"},
+		healthErr:    errors.New("simulated new application health failure"),
+	}
+	f.onStart = func(exe, dir string) {
+		writeExecutable(t, exe, "new executable")
+		writeExecutable(t, cli, "new CLI")
+		// The backup the recovery needs is gone, as if the transaction
+		// directory had been damaged.
+		if err := os.Remove(filepath.Join(env.txDir, cliBackupFileName)); err != nil {
+			t.Fatalf("remove CLI backup: %v", err)
+		}
+	}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+	env.writeDecision(t, installDecision{Action: "commit", Autostart: "preserve", Start: "yes"})
+
+	err := applicationInstallWorker(env.txFile)
+	if err == nil {
+		t.Fatal("the worker reported success although the CLI could not be restored")
+	}
+	if !strings.Contains(err.Error(), "recovery failed") {
+		t.Fatalf("worker error = %v, want the recovery failure to be reported", err)
+	}
+	// The program was still restored: the two restorations are independent.
+	if got := readFileString(t, env.target); got != "previous executable" {
+		t.Fatalf("TaskView.exe = %q, want the previous executable", got)
+	}
+	tx, readErr := readInstallTransaction(env.txFile)
+	if readErr != nil {
+		t.Fatalf("read transaction: %v", readErr)
+	}
+	if tx.Phase != "error" || !strings.Contains(tx.Error, "recovery failed") {
+		t.Fatalf("transaction = %+v, want the recovery failure to be recorded", tx)
 	}
 }

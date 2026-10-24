@@ -2,170 +2,188 @@
 
 面向开发者与 AI Agent 协作场景的**本地任务与优化项跟踪系统**。
 
-TaskView 是一个纯 Go 编写的 Windows 桌面应用：单文件可执行程序 `TaskView.exe`，内嵌 Web 看板与本地 HTTP API，数据保存在本机 SQLite 中。所有读写都通过 `127.0.0.1` 上的回环接口完成，数据不出本机。
+TaskView 是一个纯 Go 编写的本地任务管理系统：
+- **Web 看板（Windows）**：单文件桌面托盘应用 `TaskView.exe`，在 `127.0.0.1:3333` 提供 Web 看板界面与 Board API，数据保存在本机 SQLite 中。
+- **原生 CLI（跨平台）**：控制台工具 `taskview-cli`（Windows 下为 `taskview-cli.exe`），支持 **Windows、Linux、macOS**（amd64 / arm64）。Agent 通过原生 CLI 直接读写任务数据库，不依赖 Web 看板是否运行，无需发起任何 HTTP 请求。
 
-- **单二进制**：`CGO_ENABLED=0` 静态编译，运行不需要 Go / Node.js / SQLite 运行时，也不需要系统预装任何数据库驱动。
-- **按用户安装**：不需要管理员权限，不注册系统服务，不修改 `PATH`，不写注册表启动项以外的机器级配置。
-- **数据集中存储**：任务保存在 `%USERPROFILE%\.taskview\tasks.db`，升级与卸载都不会删除它。
-- **Agent 友好**：全部操作都有 HTTP 接口，附带开箱即用的 [Agent Skill](skills/task-view)。
+- **单二进制**：`CGO_ENABLED=0` 静态编译，运行不需要 Go / Node.js / 外部 SQLite 驱动，数据不出本机。
+- **按用户安装**：Windows 安装器无需管理员权限，安装包自带桌面应用与控制台 CLI，不注册系统服务，不擅自修改系统 PATH。
+- **数据集中存储**：任务保存在 `~/.taskview/tasks.db`（Windows 为 `%USERPROFILE%\.taskview\tasks.db`），支持环境变量 `TASKVIEW_HOME` 自定义目录。
+- **Agent 友好**：全部任务操作均由原生 CLI 支持标准 flags 与内联 `--json`，附带开箱即用的 [Agent Skill](skills/task-view)。
 
 ---
 
-## 安装（Windows）
+## 安装
 
+### Windows
 从 [Releases](https://github.com/DarlingCY/TaskView/releases) 下载 `TaskView-Setup-<版本>-windows-amd64.exe`，按提示完成安装。
-
-- **按用户安装**：安装至 `%LOCALAPPDATA%\Programs\TaskView`，无需管理员权限。
+- **桌面与 CLI 一体**：安装至 `%LOCALAPPDATA%\Programs\TaskView`，内含 `TaskView.exe` 与 `taskview-cli.exe`。
 - **快捷方式与自启**：默认创建开始菜单项；桌面快捷方式与登录自启可选（升级时保留既有自启设置）。
 - **平滑升级与回滚**：升级时先停服替换，失败自动回滚；卸载时不删除 `%USERPROFILE%\.taskview\tasks.db`。
-- **校验**：每个 Release 附带 `SHA256SUMS`；未做代码签名，SmartScreen 提示未知发布者属正常现象，核对摘要后放行即可。
+- **校验**：每个 Release 附带 `SHA256SUMS`；未做代码签名，核对摘要后放行即可。
+
+> **Windows PowerShell**：5.1 与 7+ 都可使用常规 flags（中文与空格路径已实测）。PowerShell 5.1 向原生 exe 传递内联 JSON 时会丢失双引号，因此 `--json`（包括用 `null` 清空字段）请使用 PowerShell 7+；5.1 请只使用 flags。
+
+### Linux & macOS
+从 [Releases](https://github.com/DarlingCY/TaskView/releases) 下载对应系统的预编译 CLI 压缩包：
+- Linux: `taskview-cli-<版本>-linux-amd64.tar.gz` 或 `taskview-cli-<版本>-linux-arm64.tar.gz`
+- macOS: `taskview-cli-<版本>-darwin-amd64.tar.gz` 或 `taskview-cli-<版本>-darwin-arm64.tar.gz`
+
+压缩包内的成员名为 `taskview-cli`（不带版本号）。解压并添加可执行权限，放置于系统的 PATH 路径中（如 `/usr/local/bin`）：
+```sh
+tar -xzf taskview-cli-*.tar.gz
+chmod +x taskview-cli
+sudo mv taskview-cli /usr/local/bin/
+```
+> **注意**：Linux 与 macOS 当前仅提供原生控制台 CLI 支持，未提供桌面 GUI/托盘/安装器。
 
 ---
 
-## 运行时
+## 运行时架构与边界
 
-TaskView 常驻系统托盘，并在 `127.0.0.1:3333` 提供 Web 看板与 HTTP API。
+| 组件 | 支持平台 | 运行方式 | 数据源 | 说明 |
+| --- | --- | --- | --- | --- |
+| **Web 看板** | Windows | 桌面托盘服务，监听 `127.0.0.1:3333` | `tasks.db` | 供人工在浏览器查看看板与流转任务，接口位于 `/api/board/*` |
+| **taskview-cli** | Windows / Linux / macOS | 原生控制台命令（独立进程） | `tasks.db` | 供 AI Agent 或终端开发者直接操作，无 Web/HTTP 依赖 |
 
-```powershell
-$health = Invoke-RestMethod 'http://127.0.0.1:3333/api/health'
-$health.success   # $true
-$health.version   # 运行中的版本
-```
-
-健康检查失败说明服务没有运行：**启动已安装的应用**（托盘图标或开始菜单 `TaskView`），待其就绪后重试。
-
-> `3333` 被占用时应用会自动顺延到下一个可用端口；此时以托盘「打开看板」实际打开的地址为准。
+> `tasks.db` 支持多进程通过 SQLite WAL 模式安全并发读写。
 
 ---
 
-## HTTP API
+## taskview-cli 命令指南
 
-所有接口都在 `http://127.0.0.1:3333` 之下，只接受回环地址的请求。Agent 接口统一位于 `/api/agent/*`。
+`taskview-cli` 默认输出稳定机器可读的 JSON 到 **stdout**（退出码 `0`）；失败时错误 JSON 输出到 **stderr**（退出码非零）。`--help` 与 `--version` 不会触碰数据库。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/agent/health` | 健康检查。`200` 返回 `{success,version}`；服务未就绪时返回 `503` |
-| `GET` | `/api/agent/tasks` | 任务列表。需要 `project_path`（绝对路径） |
-| `POST` | `/api/agent/tasks` | 新建任务，返回 `201` 与任务对象 |
-| `GET` | `/api/agent/tasks/{id}` | 任务详情 |
-| `PATCH` | `/api/agent/tasks/{id}` | 更新任务（只接受可写字段） |
-| `POST` | `/api/agent/tasks/{id}/notes` | **原子追加**一条备注，body 为 `{"note":"…"}`，返回更新后的任务 |
-| `POST` | `/api/agent/tasks/{id}/reject` | **驳回任务**，body 为 `{"reason":"…"}`，任务回退一档并记录驳回理由，返回更新后的任务 |
+### 退出码与错误格式
 
-### 任务字段
+- `0`：成功
+- `1`：参数错误 / 校验失败（`validation_error`）
+- `2`：任务不存在（`not_found`）
+- `3`：数据库或系统内部错误（`internal_error`）
 
-`id`、`project_path`、`project_name`、`title`、`status`、`priority`、`description`、`file_path`、`code_snippet`、`agent_notes`、`line_start`、`line_end`、`rejection_reason`、`created_at`、`updated_at`、`closed_at`。
-
-- `status`：`backlog` \| `todo` \| `in_progress` \| `review` \| `done`（默认 `todo`）
-  - `review`（待审查验证）：实现已完成、等待人工或 Agent 复核的阶段。仍算**未完成**，不设置 `closed_at`。
-  - 状态之间可任意流转，不强制审批顺序；只有 `done` 会写入 `closed_at`。
-- `priority`：`low` \| `medium` \| `high` \| `urgent`（默认 `medium`）
-- `project_path` **必须是绝对路径**，相对路径直接 `400`。
-- `description` / `file_path` / `code_snippet` / `agent_notes` 为可空字段。
-- `rejection_reason`：最近一次驳回的理由，无驳回记录时为 `null`。通过 PATCH 推进到 `review` 或 `done` 时由服务端自动清空，无需手动处理。
-
-### 查询参数
-
-| 参数 | 说明 |
-| --- | --- |
-| `project_path` | 工程绝对路径，必填 |
-| `status` / `priority` | 单值过滤（可选），不支持逗号分隔或重复传入同名参数 |
-
-```powershell
-$base = 'http://127.0.0.1:3333'
-$project = 'D:\Work\MyApp'
-
-Invoke-RestMethod "$base/api/agent/tasks?project_path=$([uri]::EscapeDataString($project))"
-Invoke-RestMethod "$base/api/agent/tasks?project_path=$([uri]::EscapeDataString($project))&status=todo&priority=high"
+错误响应格式（stderr）：
+```json
+{
+  "success": false,
+  "error": "project_path is required and must be an absolute path",
+  "code": "validation_error"
+}
 ```
 
-### 新建任务
+### 命令列表
 
-```powershell
-$body = @{
-    project_path = 'D:\Work\MyApp'
-    title        = '重构 Auth 中间件的 Token 缓存'
-    priority     = 'high'
-    description  = '高并发下每次请求都会回源数据库'
-    file_path    = 'src\middleware\auth.go'
-    line_start   = 42
-    line_end     = 65
-} | ConvertTo-Json
+#### 1. 健康检查
+```sh
+taskview-cli health
+```
+输出：`{"success":true,"version":"2.1.0"}`
 
-Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks" -ContentType 'application/json' -Body $body
+#### 2. 任务列表
+`--project-path` 为必填项，必须是绝对路径。
+```sh
+taskview-cli tasks list --project-path "/path/to/project"
+# 可选过滤 status 与 priority：
+taskview-cli tasks list --project-path "/path/to/project" --status todo --priority high
 ```
 
-### 更新与追加备注
-
-```powershell
-Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
-    -ContentType 'application/json' -Body (@{ status = 'in_progress' } | ConvertTo-Json)
-
-# 实现完成，等待复核：置为 review（仍算未完成）
-Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
-    -ContentType 'application/json' -Body (@{ status = 'review' } | ConvertTo-Json)
-
-# 验证通过后才关闭
-Invoke-RestMethod -Method Patch -Uri "$base/api/agent/tasks/T202610190001" `
-    -ContentType 'application/json' -Body (@{ status = 'done' } | ConvertTo-Json)
-
-# 原子追加，不覆盖既有备注
-Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/notes" `
-    -ContentType 'application/json' -Body (@{ note = '基准测试完成：延迟下降 35%' } | ConvertTo-Json)
+#### 3. 获取任务详情
+```sh
+taskview-cli tasks get T202610190001
+# 只读核对工程路径（不会修改任务）：
+taskview-cli tasks get T202610190001 --project-path "/path/to/project"
 ```
 
-### 驳回任务（Reject）
+#### 4. 新建任务
+支持标准 flags 传参或通过 `--json` 传入完整对象：
+```sh
+# 方式 A：标准 flags
+taskview-cli tasks create   --project-path "/path/to/project"   --title "重构 Auth 中间件的 Token 缓存"   --priority high   --status todo   --description "高并发下每次请求都会回源数据库校验 Token"   --file-path "src/middleware/auth.go"   --line-start 42   --line-end 65   --code-snippet "token := db.Query(ctx, sql)"   --agent-notes "建议引入本地 LRU 缓存"
 
-代码审查或测试未通过、编码发现阻碍不可行时使用：**任务状态回退一档**，并把具体缺陷记录到 `rejection_reason`。
+# 方式 B：内联 --json
+taskview-cli tasks create --json '{
+  "project_path": "/path/to/project",
+  "title": "重构 Auth 中间件的 Token 缓存",
+  "priority": "high",
+  "status": "todo",
+  "description": "高并发下每次请求都会回源数据库校验 Token"
+}'
+```
 
-- **接口地址**：`http://127.0.0.1:3333/api/agent/tasks/{id}/reject`
-- **请求方式**：`POST`
-- **请求头**：`Content-Type: application/json`
-- **请求体**：`{"reason":"…"}`，`reason` 必填且不能为空白，否则返回 `400`。
+#### 5. 更新任务
+```sh
+# 标准 flags
+taskview-cli tasks update T202610190001 --status in_progress --priority urgent
 
-```powershell
-# 复核不通过：review -> in_progress
-Invoke-RestMethod -Method Post -Uri "$base/api/agent/tasks/T202610190001/reject" `
-    -ContentType 'application/json' -Body (@{ reason = '缓存未失效，鉴权仍会回源数据库' } | ConvertTo-Json)
+# 归属保护：任务不属于该工程时拒绝更新，且不修改任务
+taskview-cli tasks update T202610190001 --verify-project-path "/path/to/project" --status review
+
+# 迁移任务到另一个工程（会改写 project_path，不是保护参数）
+taskview-cli tasks update T202610190001 --project-path "/path/to/other-project"
+
+# 内联 --json（支持将字段置为 null 以清空）
+taskview-cli tasks update T202610190001 --json '{
+  "status": "in_progress",
+  "description": "更新后的任务描述",
+  "code_snippet": null
+}'
+```
+
+#### 6. 追加备注（原子操作）
+在现有 `agent_notes` 末尾原子追加新内容，不覆盖历史备注：
+```sh
+taskview-cli tasks notes T202610190001 "基准测试完成：延迟下降 35%"
+```
+
+#### 7. 驳回任务（Reject）
+代码审查或测试未通过时使用，任务状态回退一档并记录驳回理由至 `rejection_reason`：
+```sh
+taskview-cli tasks reject T202610190001 "缓存未失效，鉴权仍会回源数据库"
 ```
 
 **状态回退规则**：
+- `review` → `in_progress`
+- `in_progress` → `backlog`
+- `todo` → `backlog`
+- `backlog` / `done` 无法驳回（返回退出码 `1`）
 
-| 当前状态 | 驳回后状态 |
-| --- | --- |
-| `review` | `in_progress` |
-| `in_progress` | `backlog` |
-| `todo` | `backlog` |
-| `backlog` | `400`（已在待整理，无法驳回） |
-| `done` | `400`（已完成，无法驳回） |
+---
 
-- 成功返回 `200` 与更新后的任务对象，`rejection_reason` 为写入的理由，`closed_at` 保持为 `null`。
-- 任务不存在返回 `404`；`reason` 缺失、类型非字符串或为空返回 `400`。
-- 通过 PATCH 推进到 `review` 或 `done` 时，服务端会自动清空 `rejection_reason`，**无需手动清理**。
+## 任务字段与生命周期
+
+- `status`：`backlog` \| `todo` \| `in_progress` \| `review` \| `done`（默认 `todo`）
+  - `review`（待审查验证）：实现已完成、等待人工或 Agent 复核的阶段。仍算**未完成**，`closed_at` 保持为 `null`。
+  - 只有推进至 `done` 才会写入 `closed_at`；从 `done` 移出时清空 `closed_at`。
+  - 推进至 `review` 或 `done` 时由底层数据库自动清空 `rejection_reason`。
+- `priority`：`low` \| `medium` \| `high` \| `urgent`（默认 `medium`）
+- `project_path`：**必须是绝对路径**。
 
 ---
 
 ## Agent Skill
 
-[`skills/task-view`](skills/task-view) 是标准 Agent Skill（[Agent Skills 规范](https://agentskills.io/specification)），只通过上面的 HTTP API 工作。导入方式见 [skills/task-view/README.md](skills/task-view/README.md)。
+[`skills/task-view`](skills/task-view) 是标准 Agent Skill（遵循 [Agent Skills 规范](https://agentskills.io/specification)），自带 Windows / Linux / macOS（amd64 / arm64）原生 CLI，位于 `scripts/<os>-<arch>/`，无需安装运行时、配置 PATH 或启动看板。
+
+从 Releases 下载 `taskview-skill-<版本>.zip`，核对 `SHA256SUMS` 后将完整 `task-view` 文件夹（包括 `scripts/`）导入宿主技能目录即可。Linux/macOS 从 ZIP 导入后可能需要对所选 CLI 执行 `chmod +x`。配置与导入指引见 [skills/task-view/README.md](skills/task-view/README.md)。
 
 ---
 
 ## 从源码构建
 
-仅支持 Windows 构建。需要 Windows 10 或更高版本，以及 Go 1.26.5+ 与 Inno Setup 6。
+需要 Go 1.26+。
 
+### 1. 构建 Windows 桌面安装器与 CLI
+（需要 Windows 环境与 Inno Setup 6）
 ```powershell
-pwsh -File ./scripts/build-windows.ps1            # 输出安装包至 dist\
 pwsh -File ./scripts/build-windows.ps1 -Version 2.1.0
 ```
 
-脚本会自动嵌入图标与应用清单、完成 GUI 静态编译、调用 Inno Setup 生成安装包并计算 `SHA256SUMS`。
+### 2. 构建三平台 CLI 二进制与摘要
+支持在 Windows（PowerShell）或 Linux/macOS（Bash）下交叉编译：
+```powershell
+# PowerShell:
+pwsh -File ./scripts/build-cli.ps1 -Version 2.1.0
 
----
-
-## 安全说明
-
-- 服务只监听 `127.0.0.1`，但回环绑定不等于身份认证，本机其他进程亦可访问。
-- 前端页面初次加载会向 CDN（Tailwind CDN、Google Fonts）请求样式资源，非绝对离线环境。
-- 请勿在任务内容中记录密码、Token 等敏感凭据。
+# 或 Bash:
+./scripts/build-cli.sh 2.1.0
+```
+产物与 `SHA256SUMS` 将输出至 `dist/` 目录，包括六个平台的 CLI 压缩包和自包含的 `taskview-skill-<版本>.zip`；构建同时刷新 `skills/task-view/scripts/<os>-<arch>/` 中的随包二进制。修改 CLI 源码后，提交或发布前应重建这些二进制。

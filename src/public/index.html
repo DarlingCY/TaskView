@@ -133,6 +133,11 @@
     display: block; font-size: .6875rem; font-weight: 500; letter-spacing: .06em;
     text-transform: uppercase; color: rgb(var(--c-ink-3)); margin-bottom: .375rem;
   }
+  .task-code-fields {
+    display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, clamp(3.25rem, 18%, 6rem)); gap: .5rem;
+  }
+  .task-code-fields .field { min-width: 0; }
+  .task-code-fields input[type="number"] { padding-left: .375rem; padding-right: .375rem; }
   /* -------------------------------------------------------- custom select */
   .tselect { position: relative; display: block; min-width: 0; }
   .tselect-trigger {
@@ -489,7 +494,7 @@
       <!-- search -->
       <div class="group relative ml-auto min-w-0 flex-1 md:w-[240px] md:flex-none">
         <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink3 transition-colors group-focus-within:text-brand" data-icon="search"></span>
-        <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="搜索任务、笔记、文件…"
+        <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="搜索任务、描述、文件…"
                class="field !py-[7px] !pl-8 !pr-9" aria-label="搜索任务" />
         <button id="search-clear" class="icon-btn absolute right-1.5 top-1/2 hidden h-6 w-6 -translate-y-1/2" aria-label="清空搜索">
           <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -1160,7 +1165,10 @@
     if (state.priorities.size && !state.priorities.has(task.priority)) return false;
     const q = state.search.trim().toLowerCase();
     if (q) {
-      const haystack = [task.title, task.description, task.agent_notes, task.file_path, task.project_name]
+      // The board listing no longer carries agent_notes, so the search only
+      // promises what every task in memory actually holds: title, description,
+      // file path and project name. (The placeholder says the same.)
+      const haystack = [task.title, task.description, task.file_path, task.project_name]
         .map(function (f) { return String(f || '').toLowerCase(); }).join('\n');
       if (haystack.indexOf(q) === -1) return false;
     }
@@ -1249,7 +1257,28 @@
   }
 
   /* ==================================================================== data */
-  const TASK_PAGE_SIZE = 100;   // page size the API serves for a task listing
+  const TASK_PAGE_SIZE = 500;   // page size the API serves for a task listing (server cap)
+
+  // The board listing omits the two large text bodies (code_snippet and
+  // agent_notes) to keep a page small. Everything that needs them - the task
+  // editor, the code inspector and the delete undo - fills them back in from
+  // the single-task endpoint, which always returns the full task.
+  //
+  // fetchAllTasks marks every row it reads with bodyPending, so a task that
+  // was built locally or came from a create / update response (both full) is
+  // never re-fetched.
+  async function ensureTaskBody(task) {
+    if (!task || !task.id || !task.bodyPending) return task;
+    const full = unwrapTask(await api('/api/board/tasks/' + encodeURIComponent(task.id)));
+    if (!full) return task;
+    const merged = Object.assign({}, task, full);
+    // The single-task endpoint always answers with the body. Clearing the flag
+    // is what stops the caller from asking again: if it somehow stays set, the
+    // caller opens the task as-is instead of retrying forever.
+    merged.bodyPending = false;
+    replaceTask(merged);
+    return merged;
+  }
 
   // fetchAllTasks walks every page of a task listing. The API hands out
   // bounded pages, so the front end keeps asking until a short page ends the
@@ -1266,6 +1295,11 @@
         if (task.id) {
           if (seen.has(task.id)) continue;
           seen.add(task.id);
+        }
+        // The listing carries no code_snippet / agent_notes: remember that the
+        // body still has to be fetched before an editor or undo uses it.
+        if (task.code_snippet === undefined && task.agent_notes === undefined) {
+          task.bodyPending = true;
         }
         tasks.push(task);
       }
@@ -1796,7 +1830,7 @@
           '<td class="max-w-[420px] px-2 py-2.5">' +
             '<div class="flex items-center gap-2">' +
               '<span class="truncate text-[13px] font-500 text-ink">' + esc(task.title) + '</span>' +
-              (task.agent_notes ? '<span class="shrink-0 text-ai" title="包含智能体备注">' + icon('sparkles', 'h-3.5 w-3.5') + '</span>' : '') +
+              (task.agent_notes || task.has_agent_notes ? '<span class="shrink-0 text-ai" title="包含智能体备注">' + icon('sparkles', 'h-3.5 w-3.5') + '</span>' : '') +
               (showsRejectionBadge(task) ? rejectionBadgeHtml(task) : '') +
             '</div>' +
             (showsRejectionBadge(task)
@@ -2056,43 +2090,20 @@
   });
 
   /* =========================================================== task editor */
-  // The base classes of a segmented-control button. They are shared by the
-  // status and the priority segment and re-applied when a button is toggled,
-  // so the two places can never drift apart.
-  const SEGMENT_BTN = 'flex flex-col items-center gap-1 whitespace-nowrap rounded-lg border px-1.5 py-2 text-[10.5px] font-500 transition-all duration-150';
-
-  // The status segment holds five states. Three columns on narrow screens
-  // (two tidy rows, no clipped label) and five columns from the `sm`
-  // breakpoint up. The tracks are equal, so the long "待审查验证" label always
-  // fits and the group never overflows its container.
-  function statusSegment(current) {
-    let html = '<div class="grid grid-cols-3 gap-1.5 sm:grid-cols-5" data-segment="status">';
+  function statusSelect(current) {
+    let html = '<select id="f-status" data-field="status" class="hidden" tabindex="-1" aria-label="状态">';
     STATUS_ORDER.forEach(function (status) {
-      const meta = STATUS_META[status];
-      const on = current === status;
-      html +=
-        '<button type="button" data-value="' + status + '" aria-pressed="' + on + '" title="' + attr(meta.label) + '" ' +
-          'class="' + SEGMENT_BTN + ' ' +
-          (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2') + '"' +
-          (on ? ' style="background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))"' : '') + '>' +
-          icon(meta.icon, 'h-4 w-4') + meta.label + '</button>';
+      html += '<option value="' + status + '"' + (current === status ? ' selected' : '') + '>' + esc(STATUS_META[status].label) + '</option>';
     });
-    return html + '</div>';
+    return html + '</select>';
   }
 
-  function prioritySegment(current) {
-    let html = '<div class="grid grid-cols-4 gap-1.5" data-segment="priority">';
-    PRIORITY_ORDER.forEach(function (key) {
-      const meta = PRIORITY_META[key];
-      const on = current === key;
-      html +=
-        '<button type="button" data-value="' + key + '" aria-pressed="' + on + '" ' +
-          'class="' + SEGMENT_BTN + ' ' +
-          (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2') + '"' +
-          (on ? ' style="background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))"' : '') + '>' +
-          icon(meta.icon, 'h-4 w-4') + meta.label + '</button>';
+  function prioritySelect(current) {
+    let html = '<select id="f-priority" data-field="priority" class="hidden" tabindex="-1" aria-label="优先级">';
+    PRIORITY_ORDER.forEach(function (priority) {
+      html += '<option value="' + priority + '"' + (current === priority ? ' selected' : '') + '>' + esc(PRIORITY_META[priority].label) + '</option>';
     });
-    return html + '</div>';
+    return html + '</select>';
   }
 
   function projectOptions(selectedPath) {
@@ -2103,7 +2114,18 @@
     return html;
   }
 
-  function openTaskModal(task) {
+  function openTaskModal(task, bodyResolved) {
+    // Opening from the list has to fetch the body first; a task that already
+    // carries it (a fresh response, an editor re-open) opens synchronously.
+    // `bodyResolved` marks the retry, so a body that never arrives falls back
+    // to the (trimmed) task instead of recursing.
+    if (task && task.bodyPending && !bodyResolved) {
+      return ensureTaskBody(task).then(function (full) {
+        openTaskModal(full, true);
+      }, function (err) {
+        toast(err.message || '无法加载任务详情', { tone: 'error' });
+      });
+    }
     const isEdit = !!task;
     const t = task || { status: 'todo', priority: 'medium' };
     const selectedProject = isEdit ? (t.project_path || '') : (state.projectPath || '');
@@ -2144,14 +2166,14 @@
                 '</div>'
               : '') +
 
-            '<div class="grid gap-4 sm:grid-cols-2">' +
-              '<div class="sm:col-span-2">' +
-                '<label class="label">状态</label>' +
-                statusSegment(t.status || 'todo') +
+            '<div class="grid grid-cols-2 gap-4" data-task-selects>' +
+              '<div class="min-w-0">' +
+                '<label class="label" for="f-status-trigger">状态</label>' +
+                statusSelect(t.status || 'todo') +
               '</div>' +
-              '<div>' +
-                '<label class="label">优先级</label>' +
-                prioritySegment(t.priority || 'medium') +
+              '<div class="min-w-0">' +
+                '<label class="label" for="f-priority-trigger">优先级</label>' +
+                prioritySelect(t.priority || 'medium') +
               '</div>' +
             '</div>' +
 
@@ -2171,16 +2193,16 @@
 
             '<div class="rounded-xl border border-line-2 bg-surface2/40 p-3.5">' +
               '<div class="mb-3 flex items-center gap-2">' + icon('fileCode', 'h-3.5 w-3.5 text-ink3') + '<h3 class="text-[11px] font-600 uppercase tracking-[.1em] text-ink3">代码上下文</h3></div>' +
-              '<div>' +
-                '<label class="label" for="f-file">文件路径</label>' +
-                '<input id="f-file" data-field="file_path" class="field font-mono !text-[11.5px]" placeholder="src/server/routes/tasks.js" value="' + attr(t.file_path || '') + '" />' +
-              '</div>' +
-              '<div class="mt-3 grid grid-cols-2 gap-3">' +
-                '<div>' +
+              '<div class="task-code-fields" data-code-fields>' +
+                '<div class="min-w-0">' +
+                  '<label class="label" for="f-file">文件路径</label>' +
+                  '<input id="f-file" data-field="file_path" class="field font-mono !text-[11.5px]" placeholder="src/server/routes/tasks.js" value="' + attr(t.file_path || '') + '" />' +
+                '</div>' +
+                '<div class="min-w-0">' +
                   '<label class="label" for="f-line-start">起始行号</label>' +
                   '<input id="f-line-start" data-field="line_start" type="number" min="0" class="field font-mono" placeholder="42" value="' + (t.line_start || '') + '" />' +
                 '</div>' +
-                '<div>' +
+                '<div class="min-w-0">' +
                   '<label class="label" for="f-line-end">结束行号</label>' +
                   '<input id="f-line-end" data-field="line_end" type="number" min="0" class="field font-mono" placeholder="58" value="' + (t.line_end || '') + '" />' +
                 '</div>' +
@@ -2227,25 +2249,9 @@
 
   function wireTaskForm(layer, task) {
     const form = layer.querySelector('form');
-    const values = { status: task ? task.status : 'todo', priority: task ? task.priority : 'medium' };
 
-    // segmented controls
-    $$('[data-segment]', layer).forEach(function (group) {
-      group.addEventListener('click', function (event) {
-        const button = event.target.closest('button[data-value]');
-        if (!button) return;
-        const key = group.getAttribute('data-segment');
-        values[key] = button.getAttribute('data-value');
-        $$('button', group).forEach(function (b) {
-          const on = b === button;
-          b.setAttribute('aria-pressed', String(on));
-          const meta = key === 'status' ? STATUS_META[b.getAttribute('data-value')] : PRIORITY_META[b.getAttribute('data-value')];
-          b.className = SEGMENT_BTN + ' ' +
-            (on ? 'border-transparent shadow-sm' : 'border-line bg-surface2/60 text-ink3 hover:border-ink3/40 hover:text-ink2');
-          if (on) b.setAttribute('style', 'background:rgb(var(--c-' + meta.tone + ') / .13); color:rgb(var(--c-' + meta.tone + '))');
-          else b.removeAttribute('style');
-        });
-      });
+    ['status', 'priority'].forEach(function (field) {
+      initTselect(layer.querySelector('[data-field="' + field + '"]'));
     });
 
     // project select -> autofill path
@@ -2346,8 +2352,8 @@
       const payload = {
         title: title,
         description: get('description') || null,
-        status: values.status,
-        priority: values.priority,
+        status: get('status'),
+        priority: get('priority'),
         file_path: get('file_path') || null,
         line_start: lineStart,
         line_end: lineEnd,
@@ -2386,7 +2392,14 @@
   }
 
   /* ========================================================== code inspector */
-  function openCodeModal(task) {
+  function openCodeModal(task, bodyResolved) {
+    if (task && task.bodyPending && !bodyResolved) {
+      return ensureTaskBody(task).then(function (full) {
+        openCodeModal(full, true);
+      }, function (err) {
+        toast(err.message || '无法加载任务详情', { tone: 'error' });
+      });
+    }
     const lines = linesOf(task.code_snippet);
     const start = Number(task.line_start) || 0;
     const first = start || 1;
@@ -2624,7 +2637,17 @@
   }
 
   async function performDelete(task) {
-    const snapshot = Object.assign({}, task);
+    // The list task has no code_snippet / agent_notes; the undo payload needs
+    // them, so the full task is fetched before anything is removed. If that
+    // fetch fails the delete is abandoned rather than silently losing data.
+    let full;
+    try {
+      full = await ensureTaskBody(task);
+    } catch (err) {
+      toast(err.message || '无法加载任务详情，已取消删除', { tone: 'error' });
+      return;
+    }
+    const snapshot = Object.assign({}, full);
     const index = state.tasks.findIndex(function (t) { return t.id === task.id; });
     if (index !== -1) state.tasks.splice(index, 1);
     renderAll();

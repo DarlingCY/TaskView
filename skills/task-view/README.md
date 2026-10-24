@@ -1,14 +1,16 @@
 # TaskView Agent Skill 配置与导入指南
 
-本目录是面向 AI 编程助手（Agent）的 **TaskView Agent Skill**，遵循通用的 [Agent Skills 标准规范](https://agentskills.io/specification)，为支持 Skill 机制的宿主环境（如 OpenCode、Claude Code 等）提供"用 TaskView 记录、跟踪、流转代码任务"的标准指令。
+本目录是面向 AI 编程助手（Agent）的 **TaskView Agent Skill**，遵循通用的 [Agent Skills 标准规范](https://agentskills.io/specification)，为支持 Skill 机制的宿主环境（如 OpenCode、Claude Code 等）提供“用 TaskView 记录、跟踪、流转代码任务”的标准指令。
 
 ---
 
-## 🌟 核心特性：本地 HTTP API
+## 🌟 核心特性：原生 CLI 直连本地数据库
 
-- **技能包只含指令**：目录内只有 `SKILL.md` 与本文件。Agent 通过 TaskView 的**本地 HTTP API**（`127.0.0.1`）读写任务。
-- **免安装运行时**：终端用户使用本 Skill **无需安装 Go / Node.js / SQLite 运行时**。
-- **前置条件只有一个**：Windows 上已安装并启动 TaskView 桌面应用（见仓库根目录 README 的安装章节）。接口默认地址为 `http://127.0.0.1:3333`。
+- **原生 CLI 操作**：Agent 统一通过控制台工具 `taskview-cli`（Windows 下为 `taskview-cli.exe`）读写任务数据。直接操作 SQLite 数据库，**不依赖 Web 服务是否在线，不发起任何 HTTP 请求**。
+- **随包即用**：`scripts/<os>-<arch>/` 自带六个平台的静态 CLI（`CGO_ENABLED=0`），无需安装 Go、Node.js、外部 SQLite 驱动，也不需要配置 PATH。
+- **跨平台支持**：提供 Windows、Linux、macOS（amd64 / arm64）预编译控制台二进制。
+- **数据统一**：与 TaskView 桌面看版共用数据库（默认路径为 `~/.taskview/tasks.db` 或 `%USERPROFILE%\.taskview\tasks.db`，亦支持环境变量 `TASKVIEW_HOME`）。
+- **看板边界**：可视化看板服务通过 Windows 桌面托盘应用提供（`127.0.0.1:3333`）。Linux/macOS 当前仅支持原生 CLI 工具，未提供桌面 GUI/托盘。
 
 ---
 
@@ -16,17 +18,24 @@
 
 ```text
 task-view/
-├── SKILL.md    # Agent Skill 核心规范与指令定义（含标准 YAML Frontmatter）
-└── README.md   # 用户配置与宿主导入指引（即本文档）
+├── SKILL.md    # Agent Skill 核心规范与指令定义
+├── README.md   # 用户配置与宿主导入指引
+└── scripts/
+    ├── windows-amd64/taskview-cli.exe
+    ├── windows-arm64/taskview-cli.exe
+    ├── linux-amd64/taskview-cli
+    ├── linux-arm64/taskview-cli
+    ├── darwin-amd64/taskview-cli
+    └── darwin-arm64/taskview-cli
 ```
 
 ---
 
 ## 🚀 导入宿主环境（Import Instructions）
 
-将整个 `task-view` 文件夹复制到宿主工具支持的技能目录下，或在宿主工具中直接配置本目录路径。
+从 [Releases](https://github.com/DarlingCY/TaskView/releases) 下载 `taskview-skill-<version>.zip` 并核对 `SHA256SUMS`，解压后将整个 `task-view` 文件夹复制到宿主工具支持的技能目录下；也可直接使用仓库中的本目录。
 
-*注意：必须使用或复制整个 `task-view` 文件夹（包含 `SKILL.md` 与 `README.md`），切勿仅复制单独的 `SKILL.md`，亦切勿误将上层的 `skills` 目录当作技能包导入。*
+*必须复制整个 `task-view` 文件夹（包括 `SKILL.md`、`README.md` 和 `scripts/`），不能仅复制 `SKILL.md`，也不要误将上层的 `skills` 目录当作技能包。Linux/macOS 从 ZIP 导入后若提示无执行权限，对所选 CLI 执行 `chmod +x`。*
 
 确保最终目标路径形态为 `<skills-dir>/task-view/SKILL.md`。
 
@@ -48,29 +57,58 @@ task-view/
 ### 3. 其他支持 Agent Skills 规范的宿主
 
 查阅对应宿主工具的技能文档，将 `task-view` 文件夹复制至其识别的技能目录。
-协议规范：[Agent Skills Specification](https://agentskills.io/specification)
-
-### 生效方式
-
-完成文件放置后，**重启宿主或按宿主文档重新加载**即可生效（无需执行任何自定义导入命令）。
 
 ---
 
-## ⚠️ 权限与运维注意事项
+## 🔧 随包 CLI 定位与验证
 
-1. **前置服务**：TaskView 未运行时健康检查会失败，此时提示用户启动已安装的应用（托盘图标 / 开始菜单 `TaskView`），待其就绪后重试。
-2. **数据独立性与持久性**：任务数据库位于用户全局目录 `%USERPROFILE%\.taskview\tasks.db`，**不在技能目录内**，升级或删除技能目录不会影响它。若设置了 `TASKVIEW_HOME`，请保持一致，不要把它放进会被替换的目录。
-3. **升级 TaskView 本身**：升级安装会先停止正在运行的 TaskView 再替换程序；新版本起不来时安装程序会回滚到旧版本。任务数据与登录自启设置在升级中保持不变。
-4. **网络与安全声明**：Agent 只访问本机回环地址（`127.0.0.1`），不向外部发送任何数据；回环绑定不等于身份认证，本机其他进程同样可访问该接口。前端页面在首次未缓存加载时会向第三方 CDN（Tailwind CDN、Google Fonts）发起网络请求。
-5. **敏感信息**：严禁在任务标题、描述、备注中记录密码、Token、API Key 等凭据。
+按**执行环境**而非宿主桌面系统选择 `scripts/<os>-<arch>/`，路径相对于技能根目录。Agent 使用绝对路径调用；项目工作目录不必是技能目录。
 
----
+- Windows：x64 选 `windows-amd64/taskview-cli.exe`，ARM64 选 `windows-arm64/taskview-cli.exe`。
+- Linux（含 WSL）：`uname -m` 为 `x86_64` 选 `linux-amd64/taskview-cli`；`aarch64` / `arm64` 选 `linux-arm64/taskview-cli`。
+- macOS：Intel 选 `darwin-amd64/taskview-cli`，Apple Silicon 选 `darwin-arm64/taskview-cli`。
 
-## 🛠️ 维护者说明
+```sh
+CLI='/absolute/path/task-view/scripts/linux-amd64/taskview-cli'
+chmod +x "$CLI"
+"$CLI" --version
+```
 
-技能包内容全部为文本指令，随仓库一起维护，**不需要**任何构建脚本。修改 `skills/task-view/SKILL.md` 后即可生效。
+```powershell
+$Cli = 'C:\path\to\task-view\scripts\windows-amd64\taskview-cli.exe'
+& $Cli --version
+```
 
-与技能相关的接口变更，请同步更新：
+`--version` / `--help` 不访问数据库；`health` 会打开或初始化数据库，不是无副作用的安装检查。Windows 与 WSL 默认 HOME 不同；若要与 Windows 看板共享数据库，需要用户明确设置 WSL 的 `TASKVIEW_HOME` 为对应 `/mnt/c/.../.taskview` 目录。
 
-- `skills/task-view/SKILL.md`（Agent 调用说明）
-- 仓库根目录 `README.md`（面向用户的 API 文档）
+从源码刷新全部六份随包 CLI 与发布压缩包：
+
+```sh
+bash scripts/build-cli.sh 2.1.0
+```
+
+或在仓库根使用 PowerShell：`pwsh -File ./scripts/build-cli.ps1 -Version 2.1.0`。构建会同步更新本目录 `scripts/`，并在 `dist/` 生成独立 CLI 压缩包、完整 skill ZIP 和 `SHA256SUMS`。源代码变化后、提交或发布前应重建随包 CLI。
+
+### 备用：独立 CLI 安装与定位
+
+以下仅在随包 CLI 缺失、或需要在终端独立使用时参考；导入完整技能包无需安装或修改 PATH。
+
+### Windows
+- 若通过安装包安装了 TaskView，控制台可执行文件位于：
+  `%LOCALAPPDATA%\Programs\TaskView\taskview-cli.exe`
+- 建议将该目录添加至用户的 `Path` 环境变量，或在 Agent 执行环境中直接以绝对路径调用。
+- PowerShell 5.1 与 7+ 均可使用常规 flags 传入中文和带空格的路径（均已实测）；内联 `--json` 在 PowerShell 5.1 中会丢失双引号，请改用 PowerShell 7+（或用常规 flags）。
+
+### Linux & macOS
+- 从 Releases 下载对应系统的压缩包：
+  - Linux: `taskview-cli-<version>-linux-amd64.tar.gz` 或 `taskview-cli-<version>-linux-arm64.tar.gz`
+  - macOS: `taskview-cli-<version>-darwin-amd64.tar.gz` 或 `taskview-cli-<version>-darwin-arm64.tar.gz`
+- 压缩包内的成员名固定为 `taskview-cli`（不带版本号）。解压后将其放置于系统的 PATH 路径中（例如 `/usr/local/bin/taskview-cli` 或 `~/.local/bin/taskview-cli`），并赋予执行权限：
+  ```sh
+  chmod +x /usr/local/bin/taskview-cli
+  ```
+- 验证安装：
+  ```sh
+  taskview-cli --version
+  taskview-cli health
+  ```

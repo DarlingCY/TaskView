@@ -9,7 +9,7 @@
 //   * the status order and the Chinese label
 //   * the advance chain in_progress → review → done, and done reopens as todo
 //   * the board keeps a review column and does not drop review tasks
-//   * the status segment of the task editor offers all five states
+//   * the status select of the task editor offers all five states
 //   * the sidebar, the stats legend and the list view know about review
 //   * a review card is not struck through (only done is)
 //
@@ -59,7 +59,7 @@ const patched =
   source.slice(0, closerAt) +
   'globalThis.__taskview = { renderSidebar: renderSidebar, renderStats: renderStats, ' +
   'renderBoard: renderBoard, renderList: renderList, cardHtml: cardHtml, ' +
-  'statusSegment: statusSegment, nextStatusOf: nextStatusOf, openTaskModal: openTaskModal, ' +
+  'statusSelect: statusSelect, nextStatusOf: nextStatusOf, openTaskModal: openTaskModal, ' +
   'state: state, boardEl: boardEl, listEl: listEl, ' +
   'STATUS_ORDER: STATUS_ORDER, STATUS_META: STATUS_META }; ' +
   source.slice(closerAt);
@@ -323,80 +323,73 @@ check(list.indexOf('待审查任务') >= 0, 'the list view lost the review task'
 const reviewChip = /data-status="review"[\s\S]{0,400}?待审查验证/.test(list);
 check(reviewChip || list.indexOf('待审查验证') >= 0, 'the list view has no review status chip');
 
-// --------------------------------------------------------- status segment
+// ---------------------------------------------------------- status select
 
-const segment = tv.statusSegment('review');
+const statusSelect = tv.statusSelect('review');
 
 // All five states are selectable.
 order.forEach(function (status) {
   check(
-    segment.indexOf('data-value="' + status + '"') >= 0,
-    'the status segment has no button for ' + status
+    statusSelect.indexOf('value="' + status + '"') >= 0,
+    'the status select has no option for ' + status
   );
 });
-check(segment.indexOf('data-value="in_progress"') >= 0, 'the status segment lost in_progress');
-check(segment.indexOf('data-value="review"') >= 0, 'the status segment lost review');
-check(segment.indexOf('data-value="done"') >= 0, 'the status segment lost done');
+check(statusSelect.indexOf('value="in_progress"') >= 0, 'the status select lost in_progress');
+check(statusSelect.indexOf('value="review"') >= 0, 'the status select lost review');
+check(statusSelect.indexOf('value="done"') >= 0, 'the status select lost done');
+
+// The select is a native one, hidden behind the custom listbox control.
+check(/<select id="f-status" data-field="status"/.test(statusSelect), 'the status select lost its id or its data-field');
+check(/class="hidden"/.test(statusSelect), 'the status select is not hidden');
+check(/tabindex="-1"/.test(statusSelect), 'the status select is still focusable');
 
 // The active state is the one that was asked for.
 check(
-  /data-value="review" aria-pressed="true"/.test(segment),
-  'the review button is not marked as active'
+  /<option value="review" selected>/.test(statusSelect),
+  'the review option is not marked as selected'
 );
 check(
-  !/data-value="todo" aria-pressed="true"/.test(segment),
-  'the todo button is marked as active although review is selected'
-);
-check(
-  /data-value="review"[^>]*style="background:rgb\(var\(--c-review\)/.test(segment),
-  'the active review button is not tinted with the review colour'
-);
-
-// The segment is not a four column grid any more: five states need a layout
-// that does not clip the long label. Three columns wrap into two tidy rows on
-// narrow screens, five columns from the `sm` breakpoint up.
-check(
-  !/grid-cols-4[^"]*"[^>]*data-segment="status"/.test(segment) &&
-  !/data-segment="status"[^>]*grid-cols-4/.test(segment),
-  'the status segment is still a four column grid'
-);
-check(
-  /grid-cols-3[^"]*sm:grid-cols-5/.test(segment),
-  'the status segment does not use the three/five column responsive grid'
+  !/<option value="todo" selected>/.test(statusSelect),
+  'the todo option is marked as selected although review is selected'
 );
 
 // The long label is rendered in full, not shortened.
-check(segment.indexOf('待审查验证') >= 0, 'the status segment does not show the full 待审查验证 label');
-check(segment.indexOf('待审查验证</button>') >= 0, 'the review button does not end with the full label');
+check(statusSelect.indexOf('待审查验证') >= 0, 'the status select does not show the full 待审查验证 label');
+check(statusSelect.indexOf('>待审查验证</option>') >= 0, 'the review option does not end with the full label');
 
 // The other statuses keep their labels.
 ['待整理', '待办', '进行中', '已完成'].forEach(function (label) {
-  check(segment.indexOf('>' + label + '</button>') >= 0, 'the status segment lost the label ' + label);
+  check(statusSelect.indexOf('>' + label + '</option>') >= 0, 'the status select lost the label ' + label);
 });
 
-// The label is never truncated in the markup: the button holds the whole
-// label and the layout lets it wrap instead of clipping it.
-const reviewButton = /<button[^>]*data-value="review"[^>]*>([\s\S]*?)<\/button>/.exec(segment);
-check(!!reviewButton, 'the review button is not in the status segment');
-if (reviewButton) {
-  const label = reviewButton[1].replace(/<svg[\s\S]*?<\/svg>/g, '').trim();
-  check(label === '待审查验证', 'the review button shows "' + label + '" instead of the full label');
-  check(
-    /whitespace-nowrap/.test(reviewButton[0]),
-    'the review button does not keep its label on one line'
-  );
+// The label is never truncated in the markup: the option holds the whole
+// label, so the custom listbox can render it in full.
+const reviewOption = /<option value="review"([^>]*)>([\s\S]*?)<\/option>/.exec(statusSelect);
+check(!!reviewOption, 'the review option is not in the status select');
+if (reviewOption) {
+  check(reviewOption[2].trim() === '待审查验证', 'the review option shows "' + reviewOption[2].trim() + '" instead of the full label');
 }
 
-// The task editor renders the segment.
+// The task editor renders the select and preselects the review status.
 tv.openTaskModal(makeTask('T11', 'review', '编辑器任务'));
 const modalRoot = byId.get('id:modal-root');
 const editor = modalRoot.children[0] ? modalRoot.children[0].innerHTML : '';
-check(editor.indexOf('data-segment="status"') >= 0, 'the task editor has no status segment');
+check(editor.indexOf('data-field="status"') >= 0, 'the task editor has no status select');
+check(editor.indexOf('<select id="f-status"') >= 0, 'the task editor has no #f-status select');
 check(editor.indexOf('待审查验证') >= 0, 'the task editor has no 待审查验证 option');
 check(
-  /data-value="review" aria-pressed="true"/.test(editor),
+  /<option value="review" selected>/.test(editor),
   'the task editor does not preselect the review status'
 );
+check(
+  !/<option value="todo" selected>/.test(editor),
+  'the task editor preselects todo although the task waits for a review'
+);
+
+// The segmented control is gone for good.
+check(editor.indexOf('data-segment') < 0, 'the task editor still renders a segmented control');
+check(source.indexOf('statusSegment') < 0, 'the source still defines statusSegment');
+check(source.indexOf('prioritySegment') < 0, 'the source still defines prioritySegment');
 
 // --------------------------------------------------------------- sidebar
 

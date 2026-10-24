@@ -40,6 +40,42 @@ type installTransaction struct {
 	StartupXML     string `json:"startup_xml,omitempty"`
 	Autostart      bool   `json:"autostart"`
 	HadManifest    bool   `json:"had_manifest"`
+	// CLIState records what the previous installation had at the path of
+	// the console CLI. It is empty in a transaction of an older release,
+	// which did not know about the CLI yet.
+	CLIState string `json:"cli_state,omitempty"`
+}
+
+// cliState describes the console CLI of the previous installation.
+type cliState string
+
+const (
+	// cliStateUnknown means the previous installation was not inspected:
+	// the worker stopped before it could tell. The CLI is then left alone,
+	// because it was never replaced.
+	cliStateUnknown cliState = ""
+	// cliStateAbsent means the previous installation had no CLI. A failed
+	// installation has to remove the CLI it added, so that no program and
+	// CLI of different releases are left next to each other.
+	cliStateAbsent cliState = "absent"
+	// cliStatePresent means the previous installation had a CLI whose bytes
+	// are in the transaction directory. A failed installation restores it.
+	cliStatePresent cliState = "present"
+)
+
+const (
+	// cliExecutableName is the name of the console CLI. The installer
+	// copies it next to the installed program.
+	cliExecutableName = "taskview-cli.exe"
+	// cliBackupFileName is the name of the CLI copy in the transaction
+	// directory.
+	cliBackupFileName = "taskview-cli.exe.bak"
+)
+
+// cliInstallPath returns the location of the console CLI that belongs to an
+// installed program.
+func cliInstallPath(target string) string {
+	return filepath.Join(filepath.Dir(target), cliExecutableName)
 }
 
 type installDecision struct {
@@ -312,6 +348,30 @@ func applicationInstallWorker(name string) (result error) {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	// The console CLI is installed next to the program and belongs to the
+	// same transaction: a failed upgrade has to restore the previous CLI,
+	// and an installation that adds the CLI for the first time has to
+	// remove it again. The state is only recorded when it is known, so a
+	// worker that stops early never touches the CLI.
+	cliPath := cliInstallPath(tx.Target)
+	tx.CLIState = string(cliStateAbsent)
+	if info, err := os.Lstat(cliPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("the installed CLI is not a regular file")
+		}
+		if err = copyInstallBackup(cliPath, filepath.Join(tx.Directory, cliBackupFileName)); err != nil {
+			return fmt.Errorf("back up the installed CLI: %w", err)
+		}
+		tx.CLIState = string(cliStatePresent)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	// A running CLI cannot be replaced on Windows. The installation would
+	// fail in the middle of the file copy, so it is refused before a single
+	// file is written.
+	if err = probeExecutableReplaceable(cliPath); err != nil {
+		return err
+	}
 	if raw, err := os.ReadFile(installManifestPath(tx.DataDir)); err == nil {
 		tx.HadManifest = true
 		if err = os.WriteFile(filepath.Join(tx.Directory, "install.json.bak"), raw, 0o600); err != nil {
@@ -483,14 +543,7 @@ func rollbackApplication(tx *installTransaction) error {
 	if err != nil {
 		return err
 	}
-	if tx.HadApplication {
-		err = replaceExecutable(filepath.Join(tx.Directory, "TaskView.exe.bak"), tx.Target)
-	} else {
-		// No previous file is restored on a cancelled first install; Inno owns cleanup.
-		if _, statErr := os.Stat(tx.Target); statErr == nil {
-			err = os.Remove(tx.Target)
-		}
-	}
+	err = restoreInstalledFiles(tx)
 	if err == nil {
 		if tx.HadManifest {
 			var raw []byte
@@ -524,6 +577,51 @@ func rollbackApplication(tx *installTransaction) error {
 		return installationHealth(ctx, tx.OldVersion, tx.OldApplication)
 	}
 	return nil
+}
+
+// restoreInstalledFiles puts the program and the console CLI back into the
+// state of the previous installation.
+//
+// A first installation had neither of them and leaves neither of them behind.
+// An installation that added the console CLI removes it again, so that a
+// failed upgrade never leaves an old program next to a new CLI. The two
+// restorations are attempted independently: one failing file may not keep the
+// other one from being restored.
+func restoreInstalledFiles(tx *installTransaction) error {
+	var problems []error
+
+	if tx.HadApplication {
+		if err := replaceExecutable(filepath.Join(tx.Directory, "TaskView.exe.bak"), tx.Target); err != nil {
+			problems = append(problems, err)
+		}
+	} else {
+		// No previous file is restored on a cancelled first install; Inno owns cleanup.
+		if _, statErr := os.Stat(tx.Target); statErr == nil {
+			if err := os.Remove(tx.Target); err != nil {
+				problems = append(problems, err)
+			}
+		} else if !os.IsNotExist(statErr) {
+			problems = append(problems, statErr)
+		}
+	}
+
+	switch cliState(tx.CLIState) {
+	case cliStatePresent:
+		if err := replaceExecutable(filepath.Join(tx.Directory, cliBackupFileName), cliInstallPath(tx.Target)); err != nil {
+			problems = append(problems, err)
+		}
+	case cliStateAbsent:
+		cliPath := cliInstallPath(tx.Target)
+		if _, statErr := os.Stat(cliPath); statErr == nil {
+			if err := os.Remove(cliPath); err != nil {
+				problems = append(problems, err)
+			}
+		} else if !os.IsNotExist(statErr) {
+			problems = append(problems, statErr)
+		}
+	}
+
+	return errors.Join(problems...)
 }
 
 func startInstalledApplication(exe, dir string) error {

@@ -31,7 +31,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '2.0.0'
+    [string]$Version = '2.1.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,6 +167,22 @@ try {
         Pop-Location
     }
 
+    Write-Step "Compiling the console CLI"
+    $CliExe = Join-Path $DistDir 'taskview-cli.exe'
+    Push-Location $RepoRoot
+    try {
+        Invoke-Checked -FilePath 'go' -WorkingDirectory $RepoRoot -Arguments @(
+            'build',
+            '-trimpath',
+            '-ldflags', "-s -w -X main.version=$Version",
+            '-o', $CliExe,
+            './cmd/taskview-cli'
+        )
+    }
+    finally {
+        Pop-Location
+    }
+
     Write-Step "Compiling the application"
     $env:CGO_ENABLED = '0'
     Push-Location $RepoRoot
@@ -219,8 +235,20 @@ Get-ChildItem -LiteralPath $DistDir -Filter '*~' -ErrorAction SilentlyContinue |
 
 Write-Step "Writing the checksum list"
 $hash = Get-Sha256Hex -Path $SetupExe
-# The published name has to match the asset name of the release exactly.
-"$hash  $(Split-Path -Leaf $SetupExe)" | Set-Content -LiteralPath $ChecksumFile -Encoding ASCII
+$installerLeaf = Split-Path -Leaf $SetupExe
+$existing = @()
+if (Test-Path -LiteralPath $ChecksumFile) {
+    $existing = (Get-Content -LiteralPath $ChecksumFile) | Where-Object { $_ -and -not $_.StartsWith('#') }
+}
+$allLines = @()
+foreach ($line in $existing) {
+    $fileName = ($line -split '\s+')[1]
+    if ($fileName -ne $installerLeaf) {
+        $allLines += $line
+    }
+}
+$allLines += "$hash  $installerLeaf"
+$allLines | Set-Content -LiteralPath $ChecksumFile -Encoding ASCII
 
 Write-Step "Done"
 Get-ChildItem -LiteralPath $DistDir |

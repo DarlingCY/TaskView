@@ -28,11 +28,15 @@
 ; installation never migrates on its own.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.0.0"
+  #define MyAppVersion "2.1.0"
 #endif
 
 #ifndef MyAppSource
   #define MyAppSource "..\dist\TaskView.exe"
+#endif
+
+#ifndef MyCliSource
+  #define MyCliSource "..\dist\taskview-cli.exe"
 #endif
 
 #define MyAppName "TaskView"
@@ -94,6 +98,7 @@ Name: "autostart"; Description: "Start {#MyAppName} automatically when you log i
 ; The installed program. The version of the file is not compared: the
 ; installer always writes the program that belongs to this release.
 Source: {#MyAppSource}; DestDir: "{app}"; Flags: ignoreversion
+Source: {#MyCliSource}; DestDir: "{app}"; Flags: ignoreversion
 ; The same binary as the installation helper. dontcopy keeps it out of the
 ; installation directory; it is extracted to the temporary directory of the
 ; setup and executed from there.

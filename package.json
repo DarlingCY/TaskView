@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build:css": "tailwindcss -i src/tailwind.css -o src/public/tailwind.min.css -m",
-    "test": "node scripts/offline_bundle_test.js && node scripts/rejection_test.js && node scripts/dom_fingerprint_test.js && node scripts/project_stats_derivation_test.js && node scripts/card_render_test.js && node scripts/font_stack_test.js && node scripts/review_status_test.js && node scripts/sidebar_counts_test.js && node scripts/topbar_layout_test.js"
+    "test": "node scripts/offline_bundle_test.js && node scripts/rejection_test.js && node scripts/dom_fingerprint_test.js && node scripts/project_stats_derivation_test.js && node scripts/card_render_test.js && node scripts/font_stack_test.js && node scripts/review_status_test.js && node scripts/task_form_select_test.js && node scripts/sidebar_counts_test.js && node scripts/topbar_layout_test.js"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.19"

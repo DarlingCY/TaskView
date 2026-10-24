@@ -848,6 +848,71 @@ func TestDeferredSelfDeleteIsScheduledForRunningManagedBinary(t *testing.T) {
 	}
 }
 
+// The replaceability probe has to reject the common Windows case: a file that
+// another process opened without sharing write access. A running executable is
+// exactly such a file.
+func TestProbeExecutableReplaceableRefusesARunningExecutable(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("executable path: %v", err)
+	}
+	if err := probeExecutableReplaceable(self); err == nil {
+		t.Fatal("the running test executable was reported as replaceable")
+	}
+}
+
+// A CLI that cannot be replaced stops the worker before the installer copies
+// any file. Nothing is rolled back because nothing was written yet, and the
+// previous program and CLI stay untouched.
+func TestApplicationInstallWorkerRefusesALockedCLIWithoutWriting(t *testing.T) {
+	env := newInstallTestEnv(t)
+	setTestVersion(t, "1.2.3")
+	env.preparePreviousInstallation(t, "1.2.3")
+	cli := cliInstallPath(env.target)
+	writeExecutable(t, cli, "previous CLI")
+
+	// Hold the CLI open without FILE_SHARE_WRITE, like a running process.
+	path, err := windows.UTF16PtrFromString(cli)
+	if err != nil {
+		t.Fatalf("convert CLI path: %v", err)
+	}
+	handle, err := windows.CreateFile(path, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil,
+		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatalf("lock CLI: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+
+	f := &installFakes{registration: autostartRegistration{Exists: true, Enabled: true, MatchesDataDir: true, Exe: env.target, XML: "<Task>previous</Task>"}}
+	installFakeSeams(t, f)
+
+	env.writeTransaction(t, installTransaction{Target: env.target, DataDir: env.dataDir, Version: "1.2.3", Directory: env.txDir, Phase: "starting"})
+
+	err = applicationInstallWorker(env.txFile)
+	if err == nil {
+		t.Fatal("the worker accepted a CLI that cannot be replaced")
+	}
+	if !strings.Contains(err.Error(), "cannot be replaced") {
+		t.Fatalf("worker error = %v, want a clear replaceability error", err)
+	}
+	if got := readFileString(t, env.target); got != "previous executable" {
+		t.Fatalf("TaskView.exe = %q, want the previous executable untouched", got)
+	}
+	if got := readFileString(t, cli); got != "previous CLI" {
+		t.Fatalf("CLI = %q, want the previous CLI untouched", got)
+	}
+	tx, readErr := readInstallTransaction(env.txFile)
+	if readErr != nil {
+		t.Fatalf("read transaction: %v", readErr)
+	}
+	if tx.Phase != "error" || !strings.Contains(tx.Error, "cannot be replaced") {
+		t.Fatalf("transaction = %+v, want the refusal to be recorded", tx)
+	}
+	if len(f.started) != 0 {
+		t.Fatalf("the worker started the application despite the refusal: %v", f.started)
+	}
+}
+
 // compile-time guards that os/exec and windows stay referenced.
 var _ = exec.Command
 var _ = os.Environ

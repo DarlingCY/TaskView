@@ -16,6 +16,9 @@ jobs:
   release:
     name: Build and publish the Windows installer
     runs-on: windows-latest
+    # The release is only published when the native smoke tests of the other
+    # platforms have passed. A red build must never reach a release.
+    needs: [smoke-linux, smoke-macos]
 
     steps:
       - name: Check out the repository
@@ -47,9 +50,38 @@ jobs:
           }
           "VERSION=$version" >> $env:GITHUB_ENV
 
+      - name: Run the test suite
+        shell: pwsh
+        run: go test -v -count=1 ./...
+
       - name: Build the application and the installer
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Version $env:VERSION
+
+      - name: Build the multi-platform CLI archives
+        shell: pwsh
+        run: ./scripts/build-cli.ps1 -Version $env:VERSION
+
+      - name: Verify the skill bundle
+        shell: pwsh
+        run: |
+          $expected = @('task-view/SKILL.md', 'task-view/README.md')
+          foreach ($target in @('windows-amd64', 'windows-arm64', 'linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64')) {
+            $binary = if ($target.StartsWith('windows-')) { 'taskview-cli.exe' } else { 'taskview-cli' }
+            $expected += "task-view/scripts/$target/$binary"
+          }
+          $archive = [System.IO.Compression.ZipFile]::OpenRead("$PWD/dist/taskview-skill-$env:VERSION.zip")
+          try {
+            if (Compare-Object $expected @($archive.Entries.FullName)) {
+              throw 'The skill ZIP must contain both documents and all six CLIs with portable forward-slash paths.'
+            }
+            if (@($archive.Entries | Where-Object { $_.Length -eq 0 }).Count) {
+              throw 'The skill ZIP contains an empty file.'
+            }
+          }
+          finally {
+            $archive.Dispose()
+          }
 
       - name: Verify the published checksum
         shell: pwsh
@@ -58,7 +90,12 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer)) {
             throw "The installer $installer was not produced."
           }
-          $expected = ((Get-Content -LiteralPath 'dist/SHA256SUMS' -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $installerLeaf = Split-Path -Leaf $installer
+          $checksumLine = (Get-Content -LiteralPath 'dist/SHA256SUMS') | Where-Object { $_ -match "\b$installerLeaf$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "dist/SHA256SUMS does not contain an entry for $installerLeaf."
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
           $sha = [System.Security.Cryptography.SHA256]::Create()
           try {
             $stream = [System.IO.File]::OpenRead($installer)
@@ -83,6 +120,9 @@ jobs:
           name: taskview-windows-${{ github.ref_name }}
           path: |
             dist/TaskView-Setup-${{ env.VERSION }}-windows-amd64.exe
+            dist/taskview-cli-*.zip
+            dist/taskview-cli-*.tar.gz
+            dist/taskview-skill-*.zip
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -93,9 +133,72 @@ jobs:
           # The token of this repository only. It is never printed.
           GH_TOKEN: ${{ github.token }}
         run: |
+          $assets = @(
+            "dist/TaskView-Setup-$env:VERSION-windows-amd64.exe",
+            "dist/SHA256SUMS"
+          )
+          $assets += Get-Item dist/taskview-cli-*.zip, dist/taskview-cli-*.tar.gz, dist/taskview-skill-*.zip | ForEach-Object { $_.FullName }
           gh release create "${{ github.ref_name }}" `
-            "dist/TaskView-Setup-$env:VERSION-windows-amd64.exe" `
-            "dist/SHA256SUMS" `
+            @assets `
             --verify-tag `
             --title "TaskView $env:VERSION" `
             --generate-notes
+
+  smoke-linux:
+    name: Native smoke test on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build taskview-cli natively
+        run: go build -o taskview-cli ./cmd/taskview-cli
+      - name: Run CLI tests
+        run: go test -v -count=1 ./cmd/taskview-cli/... ./internal/db/... ./internal/board/...
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install front-end packages
+        # There is no package-lock.json in the repository, so npm ci cannot be
+        # used here. The install is only needed for the tailwindcss dev
+        # dependency; the test scripts themselves have no dependencies.
+        run: npm install --no-audit --no-fund
+      - name: Run front-end tests
+        run: npm test
+      - name: Check the Bash CLI build script
+        run: bash ./scripts/build-cli_test.sh
+      - name: Run CLI smoke test
+        run: |
+          ./taskview-cli --version
+          ./taskview-cli --help
+          TMP_DIR=$(mktemp -d)
+          TASKVIEW_HOME="$TMP_DIR" ./taskview-cli health
+          TASKVIEW_HOME="$TMP_DIR" ./taskview-cli tasks create --project-path /tmp/smoke-proj --title "Smoke Task"
+
+  smoke-macos:
+    name: Native smoke test on macOS
+    runs-on: macos-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build taskview-cli natively
+        run: go build -o taskview-cli ./cmd/taskview-cli
+      - name: Run CLI tests
+        run: go test -v -count=1 ./cmd/taskview-cli/... ./internal/db/... ./internal/board/...
+      - name: Run CLI smoke test
+        run: |
+          ./taskview-cli --version
+          ./taskview-cli --help
+          TMP_DIR=$(mktemp -d)
+          TASKVIEW_HOME="$TMP_DIR" ./taskview-cli health
+          TASKVIEW_HOME="$TMP_DIR" ./taskview-cli tasks create --project-path /tmp/smoke-proj --title "Smoke Task"

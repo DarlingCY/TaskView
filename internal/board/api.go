@@ -1,4 +1,4 @@
-package main
+package board
 
 import (
 	"bytes"
@@ -9,42 +9,26 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"taskview/internal/db"
 )
 
 func boardSendJSON(w http.ResponseWriter, status int, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		http.Error(w, `{"error":"Internal server error","success":false}`, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.WriteHeader(status)
-	_, _ = w.Write(data)
+	SendJSON(w, status, payload)
 }
 
 func boardSendError(w http.ResponseWriter, status int, msg string) {
-	if strings.TrimSpace(msg) == "" {
-		msg = http.StatusText(status)
-		if msg == "" {
-			msg = "Error"
-		}
-	}
-	boardSendJSON(w, status, map[string]any{
-		"error":   msg,
-		"success": false,
-	})
+	SendError(w, status, msg)
 }
 
 func boardReadJSONBody(r *http.Request) (map[string]any, error) {
 	limited := io.LimitReader(r.Body, maxBodyBytes+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, &ValidationError{Message: "Failed to read request body"}
+		return nil, &db.ValidationError{Message: "Failed to read request body"}
 	}
 	if len(data) > maxBodyBytes {
-		return nil, &ValidationError{Message: "Request body too large"}
+		return nil, &db.ValidationError{Message: "Request body too large"}
 	}
 
 	trimmed := bytes.TrimSpace(data)
@@ -57,12 +41,12 @@ func boardReadJSONBody(r *http.Request) (map[string]any, error) {
 
 	var raw any
 	if err := dec.Decode(&raw); err != nil {
-		return nil, &ValidationError{Message: "Request body must be valid JSON"}
+		return nil, &db.ValidationError{Message: "Request body must be valid JSON"}
 	}
 
 	obj, ok := raw.(map[string]any)
 	if !ok {
-		return nil, &ValidationError{Message: "Request body must be a JSON object"}
+		return nil, &db.ValidationError{Message: "Request body must be a JSON object"}
 	}
 	return obj, nil
 }
@@ -74,10 +58,10 @@ func boardParseListPaging(q url.Values) (limit, offset int, err error) {
 	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
 		if parseErr != nil {
-			return 0, 0, newValidationError("Invalid limit %q: expected an integer", raw)
+			return 0, 0, db.NewValidationError("Invalid limit %q: expected an integer", raw)
 		}
 		if parsed < 1 || parsed > 500 {
-			return 0, 0, newValidationError("Invalid limit %d: must be between 1 and 500", parsed)
+			return 0, 0, db.NewValidationError("Invalid limit %d: must be between 1 and 500", parsed)
 		}
 		limit = parsed
 	}
@@ -85,10 +69,10 @@ func boardParseListPaging(q url.Values) (limit, offset int, err error) {
 	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
 		if parseErr != nil {
-			return 0, 0, newValidationError("Invalid offset %q: expected an integer", raw)
+			return 0, 0, db.NewValidationError("Invalid offset %q: expected an integer", raw)
 		}
 		if parsed < 0 {
-			return 0, 0, newValidationError("Invalid offset %d: must not be negative", parsed)
+			return 0, 0, db.NewValidationError("Invalid offset %d: must not be negative", parsed)
 		}
 		offset = parsed
 	}
@@ -97,23 +81,23 @@ func boardParseListPaging(q url.Values) (limit, offset int, err error) {
 }
 
 func boardPrepareCreatePayload(body map[string]any) (map[string]any, error) {
-	canonical := canonicalize(body)
+	canonical := db.Canonicalize(body)
 
 	raw, ok := canonical["project_path"]
 	if !ok {
-		return nil, newValidationError("project_path is required and must be an absolute path")
+		return nil, db.NewValidationError("project_path is required and must be an absolute path")
 	}
-	rawPath, _, err := requireString(raw, "project_path")
+	rawPath, _, err := db.RequireString(raw, "project_path")
 	if err != nil {
 		return nil, err
 	}
-	projectPath, err := NormalizeProjectPath(rawPath)
+	projectPath, err := db.NormalizeProjectPath(rawPath)
 	if err != nil {
 		return nil, err
 	}
 
 	canonical["project_path"] = projectPath
-	canonical["project_name"] = ProjectNameFromPath(projectPath)
+	canonical["project_name"] = db.ProjectNameFromPath(projectPath)
 	return canonical, nil
 }
 
@@ -133,7 +117,7 @@ var boardWritableTaskColumns = map[string]bool{
 
 func boardPickWritable(body map[string]any) map[string]any {
 	out := make(map[string]any)
-	for key, value := range canonicalize(body) {
+	for key, value := range db.Canonicalize(body) {
 		if boardWritableTaskColumns[key] {
 			out[key] = value
 		}
@@ -141,7 +125,58 @@ func boardPickWritable(body map[string]any) map[string]any {
 	return out
 }
 
-func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanPath string) {
+// boardTaskListItem is the list representation of a task.
+//
+// The board list may hold hundreds of tasks and is fetched page by page, so it
+// carries neither the code snippet nor the agent notes body. The single-task
+// endpoint (GET /api/board/tasks/{id}) still returns the full Task, and so does
+// the CLI. has_agent_notes keeps the list's “包含智能体备注” marker without
+// shipping the notes themselves.
+type boardTaskListItem struct {
+	ID              string  `json:"id"`
+	ProjectPath     string  `json:"project_path"`
+	ProjectName     string  `json:"project_name"`
+	Title           string  `json:"title"`
+	Status          string  `json:"status"`
+	Priority        string  `json:"priority"`
+	Description     *string `json:"description"`
+	FilePath        *string `json:"file_path"`
+	LineStart       *int64  `json:"line_start"`
+	LineEnd         *int64  `json:"line_end"`
+	RejectionReason *string `json:"rejection_reason"`
+	CreatedAt       int64   `json:"created_at"`
+	UpdatedAt       int64   `json:"updated_at"`
+	ClosedAt        *int64  `json:"closed_at"`
+	HasAgentNotes   bool    `json:"has_agent_notes"`
+}
+
+// boardTaskList projects a full task onto the list representation. The body
+// fields are dropped; every other field keeps its name and value.
+func boardTaskList(tasks []db.Task) []boardTaskListItem {
+	items := make([]boardTaskListItem, len(tasks))
+	for i, task := range tasks {
+		items[i] = boardTaskListItem{
+			ID:              task.ID,
+			ProjectPath:     task.ProjectPath,
+			ProjectName:     task.ProjectName,
+			Title:           task.Title,
+			Status:          task.Status,
+			Priority:        task.Priority,
+			Description:     task.Description,
+			FilePath:        task.FilePath,
+			LineStart:       task.LineStart,
+			LineEnd:         task.LineEnd,
+			RejectionReason: task.RejectionReason,
+			CreatedAt:       task.CreatedAt,
+			UpdatedAt:       task.UpdatedAt,
+			ClosedAt:        task.ClosedAt,
+			HasAgentNotes:   task.AgentNotes != nil && *task.AgentNotes != "",
+		}
+	}
+	return items
+}
+
+func handleBoardAPI(store *db.Store, w http.ResponseWriter, r *http.Request, cleanPath string) {
 	relPath := strings.TrimPrefix(cleanPath, "/api/board")
 	if relPath == "" {
 		relPath = "/"
@@ -160,7 +195,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			return
 		}
 		if projects == nil {
-			projects = []Project{}
+			projects = []db.Project{}
 		}
 		boardSendJSON(w, http.StatusOK, projects)
 		return
@@ -179,7 +214,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			scope = q.Get("projectPath")
 		}
 		if trimmed := strings.TrimSpace(scope); trimmed != "" && trimmed != "all" {
-			normalized, err := NormalizeProjectPath(trimmed)
+			normalized, err := db.NormalizeProjectPath(trimmed)
 			if err != nil {
 				boardSendError(w, http.StatusBadRequest, err.Error())
 				return
@@ -208,7 +243,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 				return
 			}
 			allBool := false
-			if b, ok := parseBoolParam(q.Get("all")); ok && b {
+			if b, ok := ParseBoolParam(q.Get("all")); ok && b {
 				allBool = true
 			}
 			search := q.Get("search")
@@ -219,7 +254,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			if projParam == "" {
 				projParam = q.Get("projectPath")
 			}
-			opts := ListOptions{
+			opts := db.ListOptions{
 				Status:   q.Get("status"),
 				Priority: q.Get("priority"),
 				Search:   search,
@@ -227,7 +262,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 				All:      allBool,
 			}
 			if !allBool {
-				scope, err := NormalizeProjectPath(projParam)
+				scope, err := db.NormalizeProjectPath(projParam)
 				if err != nil {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
@@ -243,7 +278,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			opts.Offset = offset
 			tasks, err := store.ListTasks(opts)
 			if err != nil {
-				if IsValidationError(err) {
+				if db.IsValidationError(err) {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
 				}
@@ -251,9 +286,11 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 				return
 			}
 			if tasks == nil {
-				tasks = []Task{}
+				tasks = []db.Task{}
 			}
-			boardSendJSON(w, http.StatusOK, tasks)
+			// The list is the hot path: drop the two large text bodies and send
+			// only the boolean the list marker needs.
+			boardSendJSON(w, http.StatusOK, boardTaskList(tasks))
 			return
 		}
 
@@ -270,7 +307,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 			}
 			task, err := store.CreateTask(data)
 			if err != nil {
-				if IsValidationError(err) {
+				if db.IsValidationError(err) {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
 				}
@@ -324,7 +361,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 
 			updated, err := store.RejectTask(id, reason)
 			if err != nil {
-				if IsValidationError(err) {
+				if db.IsValidationError(err) {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
 				}
@@ -372,12 +409,12 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 				return
 			}
 			if raw, ok := fields["project_path"]; ok {
-				rawPath, _, err := requireString(raw, "project_path")
+				rawPath, _, err := db.RequireString(raw, "project_path")
 				if err != nil {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
 				}
-				normalized, err := NormalizeProjectPath(rawPath)
+				normalized, err := db.NormalizeProjectPath(rawPath)
 				if err != nil {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
@@ -397,7 +434,7 @@ func handleBoardAPI(store *Store, w http.ResponseWriter, r *http.Request, cleanP
 
 			updated, err := store.UpdateTask(id, fields)
 			if err != nil {
-				if IsValidationError(err) {
+				if db.IsValidationError(err) {
 					boardSendError(w, http.StatusBadRequest, err.Error())
 					return
 				}

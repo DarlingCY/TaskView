@@ -266,6 +266,16 @@ tv.loadAll().then(function () {
   );
   check(tv.state.stats.total === 10, 'global state.stats.total expected 10, got ' + tv.state.stats.total);
 
+  // The board asks for whole pages of 500 tasks (the server-side cap), so a
+  // 5000-task board needs 10 requests instead of 50.
+  const taskPages = requestedUrls.filter(function (u) { return u.indexOf('/api/board/tasks') >= 0; });
+  check(taskPages.length === 1,
+    'the board walk made ' + taskPages.length + ' task requests for a one-page result');
+  taskPages.forEach(function (u) {
+    check(u.indexOf('limit=500') >= 0, 'the board walk does not ask for 500 tasks per page: ' + u);
+    check(u.indexOf('limit=100') < 0, 'the board walk still asks for the old page size of 100: ' + u);
+  });
+
   if (failures.length) {
     console.error('FAIL: ' + failures.length + ' assertion(s) failed');
     failures.forEach(function (f) { console.error('  - ' + f); });

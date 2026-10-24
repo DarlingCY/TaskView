@@ -49,7 +49,8 @@ if (closerAt < 0) {
 const patched =
   source.slice(0, closerAt) +
   'globalThis.__taskview = { cardHtml: cardHtml, renderList: renderList, ' +
-  'state: state, listEl: listEl, openTaskModal: openTaskModal, openCodeModal: openCodeModal }; ' +
+  'state: state, listEl: listEl, openTaskModal: openTaskModal, openCodeModal: openCodeModal, ' +
+  'ensureTaskBody: ensureTaskBody, fetchAllTasks: fetchAllTasks, matchesFilters: matchesFilters }; ' +
   source.slice(closerAt);
 
 // ------------------------------------------------------------------ DOM
@@ -140,6 +141,8 @@ const documentStub = {
   removeEventListener: function () {},
 };
 
+let renderRequests = 0;
+
 const sandbox = {
   document: documentStub,
   console: console,
@@ -149,8 +152,44 @@ const sandbox = {
     removeItem: function () {},
   },
   CSS: { escape: function (value) { return String(value); } },
-  // The render helpers must never reach the network.
-  fetch: function () { throw new Error('unexpected network call in the render test'); },
+  // The render helpers must never reach the network. The one exception is the
+  // single-task endpoint, which the slim (list) tasks have to call before the
+  // editor or the code modal can show the body.
+  fetch: function (url) {
+    const target = String(url);
+    // Bound the request count: an endless re-fetch loop never yields to the
+    // event loop, so it would hang the test instead of failing it.
+    renderRequests += 1;
+    if (renderRequests > 1000) {
+      return Promise.reject(new Error('runaway request loop in the render test: ' + target));
+    }
+    const single = /^\/api\/board\/tasks\/([^/?]+)$/.exec(target);
+    if (single) {
+      const id = decodeURIComponent(single[1]);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: function () {
+          return Promise.resolve(JSON.stringify({
+            id: id,
+            title: '完整任务',
+            status: 'todo',
+            priority: 'medium',
+            project_name: 'TaskView',
+            project_path: 'C:/workspace/taskview',
+            file_path: 'src/public/index.html',
+            line_start: 10,
+            line_end: 20,
+            code_snippet: 'const full = true;',
+            agent_notes: '从单条接口补全的备注。',
+            created_at: 1700000000000,
+            updated_at: 1700000000000,
+          }));
+        },
+      });
+    }
+    throw new Error('unexpected network call in the render test: ' + target);
+  },
   setTimeout: setTimeout,
   clearTimeout: clearTimeout,
   setInterval: function () { return 0; },
@@ -238,7 +277,109 @@ check(list.indexOf('data-act="code"') >= 0, 'list view lost the code action butt
 check(list.indexOf('包含智能体备注') >= 0, 'list view lost the agent notes marker');
 check(list.indexOf(task.title) >= 0, 'list view lost the title');
 
+// The board listing no longer carries agent_notes, so the marker has to keep
+// working from the has_agent_notes flag the list DTO provides.
+tv.state.tasks = [{
+  id: 'T202610220009',
+  title: '列表裁剪后的任务',
+  description: '',
+  status: 'todo',
+  priority: 'medium',
+  project_name: 'TaskView',
+  project_path: 'C:/workspace/taskview',
+  created_at: 1700000000000,
+  updated_at: 1700000000000,
+  has_agent_notes: true,
+}];
+tv.renderList();
+const slimList = tv.listEl.innerHTML;
+check(slimList.indexOf('包含智能体备注') >= 0, 'the list marker disappeared for a slim task with has_agent_notes');
+check(slimList.indexOf('M11 2.5l1.7 4.9') >= 0, 'the list marker lost its sparkles icon for a slim task');
+
+tv.state.tasks = [{
+  id: 'T202610220010',
+  title: '没有备注的任务',
+  description: '',
+  status: 'todo',
+  priority: 'medium',
+  project_name: 'TaskView',
+  project_path: 'C:/workspace/taskview',
+  created_at: 1700000000000,
+  updated_at: 1700000000000,
+  has_agent_notes: false,
+}];
+tv.renderList();
+check(tv.listEl.innerHTML.indexOf('包含智能体备注') < 0, 'a slim task without notes is marked as having notes');
+
+// ---------------------------------------------------------- client search
+
+// The listing no longer carries agent_notes, so the search must neither look
+// at the notes nor promise to. The placeholder is the promise the UI makes.
+check(html.indexOf('搜索任务、笔记、文件…') < 0, 'the search placeholder still promises to search the notes');
+check(html.indexOf('placeholder="搜索任务、描述、文件…"') >= 0, 'the search placeholder does not name what it actually searches');
+
+tv.state.search = '只存在于笔记里';
+tv.state.priorities.clear();
+tv.state.projectPath = null;
+check(
+  tv.matchesFilters({ id: 'S1', title: '普通任务', description: '', agent_notes: '只存在于笔记里的一段话' }) === false,
+  'the client search still matches agent_notes, which the listing does not carry'
+);
+check(
+  tv.matchesFilters({ id: 'S2', title: '只存在于笔记里', description: '' }) === true,
+  'the client search stopped matching the title'
+);
+check(
+  tv.matchesFilters({ id: 'S3', title: 'x', description: '只存在于笔记里 的描述' }) === true,
+  'the client search stopped matching the description'
+);
+tv.state.search = '';
+
+tv.state.tasks = [task];
+
 // ------------------------------------------------------- code modal
+
+// The slim task has no body: the modal has to fetch it from the single-task
+// endpoint before rendering the snippet and the notes.
+const slimTask = {
+  id: 'T202610220011',
+  title: '需要补全的任务',
+  status: 'todo',
+  priority: 'medium',
+  project_name: 'TaskView',
+  project_path: 'C:/workspace/taskview',
+  file_path: 'src/public/index.html',
+  line_start: 10,
+  line_end: 20,
+  created_at: 1700000000000,
+  updated_at: 1700000000000,
+  bodyPending: true,
+};
+
+tv.state.tasks = [slimTask];
+void tv.openCodeModal(slimTask).then(function () {
+  const slimModalRoot = byId.get('id:modal-root');
+  const codeLayerIndex = slimModalRoot.children.length - 1;
+  const slimCodeModal = slimModalRoot.children[codeLayerIndex] ? slimModalRoot.children[codeLayerIndex].innerHTML : '';
+  check(slimCodeModal.indexOf('const full = true;') >= 0, 'the code modal did not fetch the slim task body');
+  check(slimCodeModal.indexOf('从单条接口补全的备注。') >= 0, 'the code modal did not show the fetched notes');
+
+  // -------------------------------------------------------- task editor
+
+  return tv.openTaskModal(slimTask);
+}).then(function () {
+  const slimModalRoot = byId.get('id:modal-root');
+  const editorLayerIndex = slimModalRoot.children.length - 1;
+  const slimEditor = slimModalRoot.children[editorLayerIndex] ? slimModalRoot.children[editorLayerIndex].innerHTML : '';
+  check(slimEditor.indexOf('const full = true;') >= 0, 'the task editor did not fetch the slim task body');
+  check(slimEditor.indexOf('从单条接口补全的备注。') >= 0, 'the task editor did not show the fetched notes');
+  check(tv.state.tasks[0].bodyPending === false, 'the fetched body was not cached on the task');
+
+  finish();
+}).catch(function (err) {
+  failures.push('fetching the slim task body threw: ' + (err && err.message ? err.message : err));
+  finish();
+});
 
 tv.openCodeModal(task);
 const modalRoot = byId.get('id:modal-root');
@@ -261,10 +402,11 @@ check(editor.indexOf(task.title) >= 0, 'task editor lost the title');
 
 // ------------------------------------------------------------- result
 
-if (failures.length) {
-  console.error('FAIL: ' + failures.length + ' assertion(s) failed');
-  failures.forEach(function (failure) { console.error('  - ' + failure); });
-  process.exit(1);
+function finish() {
+  if (failures.length) {
+    console.error('FAIL: ' + failures.length + ' assertion(s) failed');
+    failures.forEach(function (failure) { console.error('  - ' + failure); });
+    process.exit(1);
+  }
+  console.log('OK: board card drops the code link and the agent insight; list, editor and code modal intact');
 }
-
-console.log('OK: board card drops the code link and the agent insight; list, editor and code modal intact');

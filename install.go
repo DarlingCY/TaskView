@@ -169,6 +169,37 @@ func runningManagedBinary(managed string) bool {
 	return samePath(self, managed)
 }
 
+// probeExecutableReplaceable checks whether a file may be replaced right now.
+//
+// Windows refuses to replace a file that is currently executed. The
+// installer copies the program and the console CLI, so a running CLI would
+// turn the installation into a partial commit. The check is done before a
+// single file is written, so the installation either happens completely or
+// not at all.
+//
+// The probe opens the file for writing, which is exactly what the later
+// replacement does. A file that is not there is replaceable.
+func probeExecutableReplaceable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	probe, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("the installed file %s cannot be replaced%s: %w", path, runningBinaryHint(path), err)
+	}
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("the installed file %s cannot be replaced%s: %w", path, runningBinaryHint(path), err)
+	}
+	return nil
+}
+
 // samePath compares two paths after making them absolute and clean.
 //
 // The comparison folds case, because Windows guarantees a case-insensitive
